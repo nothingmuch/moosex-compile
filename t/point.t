@@ -81,8 +81,6 @@ dies_ok {
 
 # test some class introspection
 
-__END__
-
 can_ok('Point', 'meta');
 isa_ok(Point->meta, 'Moose::Meta::Class');
 

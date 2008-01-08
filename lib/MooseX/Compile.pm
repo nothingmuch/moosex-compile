@@ -1,22 +1,22 @@
 #!/usr/bin/perl
 
-BEGIN {
-    require Carp::Heavy;
-    unshift @INC, sub {
-        my ( $self, $file ) = @_;
+#BEGIN {
+#    require Carp::Heavy;
+#    unshift @INC, sub {
+#        my ( $self, $file ) = @_;
 #        warn "loading $file" . Carp::longmess if $file =~ /MOP|meta|Moose/i;
-        return;
-    }
-}
-
-#use Carp ();
-#use Carp::Heavy ();
-#BEGIN { unshift @INC, sub { warn "loading file $_[1] at " . times . "\n"; warn Carp::longmess() } }
+#        return;
+#    }
+#}
 
 package MooseX::Compile;
 
 use strict;
 use warnings;
+
+use Scalar::Util qw(blessed);
+
+use Hash::Util qw(fieldhash);
 
 if ( $ENV{MX_COMPILE_PRELOAD_MOOSE} ) {
     __PACKAGE__->load_moose();
@@ -51,13 +51,66 @@ sub load_classes {
     }
 }
 
-sub sym ($$) {
-    my ( $sym, $type ) = @_;
-    bless \$sym, __PACKAGE__ . "::mangled::$type";
+sub sym ($$;@) {
+    my ( $sym, $type, @args ) = @_;
+    bless { @args, name => $sym }, __PACKAGE__ . "::mangled::$type";
 }
 
-sub subref ($) {
-    sym($_[0], "subref");
+sub code_name ($;$) {
+    my ( $code, $cv ) = @_;
+    require B;
+    $cv ||= B::svref_2object($code);
+    local $@;
+    return eval { join("::", $cv->STASH->NAME, $cv->GV->NAME) };
+}
+
+sub verified_code_name ($;$) {
+    my ( $code, $cv ) = @_;
+
+    if ( my $name = code_name($code, $cv) ) {
+        if ( verify_code_name($code, $name) ) {
+            return $name;
+        }
+    }
+
+    return;
+}
+
+sub verify_code_name ($$) {
+    my ( $code, $name ) = @_;
+
+    no strict 'refs';
+    \&$name == $code;
+}
+
+sub subref ($;$) {
+    my ( $code, $name ) = @_;
+
+    if ( ref $code ) {
+        require B;
+        my $cv = B::svref_2object($code);
+        $name ||= code_name($code, $cv);
+        if ( $name && verify_code_name($code,$name) ) {
+            my $file = $cv->FILE;
+            my %rev_inc = reverse %INC;
+            return sym( $name, "subref", ( -f $file ? ( file => $rev_inc{$file} ) : () ) );
+        } else {
+            warn "$code has name '$name', but it doesn't point back to the cv" if $name;
+            require Data::Dumper;
+            no strict 'refs';
+            $Data::Dumper::Deparse = 1;
+            warn Data::Dumper::Dumper({
+                name => $name,
+                name_strval => ("". \&$name),
+                name_ref => \&$name,
+                arg_ref => $code,
+                arg_strval => "$code",
+            });
+            die "Can't make a symbolic ref to $code, it has no name or the name is invalid";
+        }
+    } else {
+        return sym($code, "subref");
+    }
 }
 
 sub end_of_file_execution {
@@ -95,55 +148,70 @@ sub compile_ancestors {
 sub store_meta {
     my ( $self, $class, $file, @args ) = @_;
 
-    require Clone;
     require Data::Visitor::Callback;
 
-    # refer to global items symbolically
     my $meta = Data::Visitor::Callback->new(
-        ignore_return_values => 1,
-        "Moose::Meta::Class"     => "visit_ref",
-        "Moose::Meta::Method"    => "visit_ref",
-        "Moose::Meta::Attribute" => "visit_ref",
+        "object" => sub {
+            my ( $self, $obj ) = @_;
+            $self->visit_ref($obj) unless $obj->isa("Moose::Meta::TypeConstraint");
+        },
+        "Class::MOP::Class" => sub {
+            my ( $self, $meta ) = @_;
+
+            if ( $meta->is_immutable ) {
+                return bless {
+                    class      => $meta,
+                    orig_class => $meta->{___original_class},
+                    options    => $meta->immutable_transformer->options,
+                }, "MooseX::Compile::mangled::immutable_metaclass";
+            }
+            
+            if ( $meta->is_anon_class ){
+                warn "Can't reliably store anonymouse metaclasses yet";
+            }
+
+            $meta;
+        },
         "Moose::Meta::TypeConstraint" => sub {
             my ( $self, $constraint ) = @_;
 
             if ( defined ( my $name = $constraint->name ) ) {
-                $_ = sym $name, "constraint";
+                return sym $name, "constraint";
             } else {
                 warn "FOOO";
+                return $constraint;
             }
         },
-        "Moose::Meta::Method::Accessor" => sub {
-            my ( $self, $method ) = @_;
-
-            $self->visit( $method->body );
-        },
-        code   => sub {
+        code => sub {
             my ( $self, $code ) = @_;
 
-            require Devel::Sub::Which;
-            if ( my $subname = Devel::Sub::Which::which($code) ) {
-                $subname =~ s/^Moose::Meta::Method::Accessor/$class/;
-                if ( $subname =~ /^Moose::([^:]+)$/ ) {
+            if ( my $subname = code_name($code) ) {
+                if ( $subname =~ /^Moose::Meta::Method::\w+::(.*)$/ ) {
+                    # FIXME should this be verified more closely?
+                    # sometimes the coderef $code doesn't match \&{ $class::$1 }
+                    return subref "${class}::$1";
+                } elsif ( $subname =~ /^(?:Moose|metaclass)::([^:]+)$/ ) {
                     my $method = $1;
 
                     if ( $method eq 'meta' ) {
-                        $_ = subref "${class}::meta";
+                        return subref "${class}::meta";
                     } else {
                         die "subname: $subname";
                     }
                 } elsif ( $subname !~ /__ANON__$/ ) {
-                    $_ = subref $subname;
+                    return subref $code, $subname;
+                } else {
+                    warn "Unable to locate symbol for $code";
+                    return $code;
                 }
             }
+
+            return $code;
         },
-    )->visit( Clone::clone($class->meta) );
+    )->visit( $class->meta );
 
     require Storable;
     Storable::nstore( $meta, $self->cached_meta_file_for_class( $class, $file ) );
-
-    #require YAML;
-    #warn YAML::Dump($meta);
 }
 
 sub get_generated_methods {
@@ -175,8 +243,6 @@ sub compile_method {
 
     my $body_str = $d->coderef2text($body);
 
-    warn "Compiling ${class}::" . $method->name;
-
     my $closure_vars = PadWalker::closed_over($body);
 
     my @env;
@@ -190,7 +256,7 @@ sub compile_method {
                 : "die 'missing constraint'"
         } @$constraints;
         
-        push @env, "require Moose::Util::TypeConstraints", join("\n    ", 'my @type_constraints = (', map { "$_," } @constraint_code ) . "\n)",
+        push @env, "require Moose::Util::TypeConstraints::OptimizedConstraints", join("\n    ", 'my @type_constraints = (', map { "$_," } @constraint_code ) . "\n)",
     }
     
     push @env, map {
@@ -216,11 +282,28 @@ sub _value_to_perl {
     my ( $self, $value ) = @_;
 
     require Data::Dump;
-    require B::Deparse;
 
     ( (ref($value)||'') eq 'CODE'
-        ? "sub " . B::Deparse->new->coderef2text($value)
+        ? $self->_subref_to_perl($value)
         : Data::Dump::dump($value) ) 
+}
+
+sub _subref_to_perl {
+    my ( $self, $subref ) = @_;
+
+    my %rev_inc = reverse %INC;
+
+    if ( ( my $name = code_name($subref) ) !~ /__ANON__$/ ) {
+        require B;
+        if ( -f ( my $file = B::svref_2object($subref)->FILE ) ) {
+            return qq|do { require "\Q$rev_inc{$file}\E"; \\&$name }|;
+        } else {
+            return '\&' . $name;
+        }
+    } else {
+        require B::Deparse;
+        "sub " . B::Deparse->new->coderef2text($subref);
+    }
 }
 
 sub write_pmc_file {
@@ -233,14 +316,19 @@ sub write_pmc_file {
 
     my $pm = <$pm_fh>;
 
-    $pm =~ s/(?=__PACKAGE__->meta->make_immutable)/#/gm; # FIXME hack hack hack
-
     print $pmc_fh "$1\n\n" if $pm =~ /^(\#\!.*)/; # copy shebang
 
     require Data::Dump;
     my $ISA = Data::Dump::dump(do { no strict 'refs'; @{"${class}::ISA"} });
 
     my $methods = $self->compile_methods( $class, $file );
+
+    $methods .= <<META;
+{
+    no warnings 'redefine';
+    *meta = sub { MooseX::Compile->load_cached_meta(__PACKAGE__, __FILE__) };
+}
+META
     
     print $pmc_fh <<PREAMBLE;
 # Register this file as a PMC so MooseX::Compile can hax0r it
@@ -254,13 +342,16 @@ use strict;
 use warnings;
 
 # stub the sugar
-{
+BEGIN {
     package $class;
 
     sub extends { }
     sub has { }
 
-    sub meta { MooseX::Compile->load_cached_meta(__PACKAGE__, __FILE__) }
+    my \$fake_meta = bless { name => q{$class} }, "MooseX::Compile::MetaBlackHole";
+    sub meta { \$fake_meta }
+
+    our \$__mx_is_compiled = 1;
 }
 
 # try to approximate the time that Moose generated code enters the class
@@ -316,31 +407,59 @@ sub inflate_cached_meta {
     Class::Autouse->autouse('Moose::Meta::Class');
     Class::Autouse->autouse('Moose::Meta::Instance');
 
-    require Data::Visitor;
+    require Data::Visitor::Callback;
+
+    fieldhash my %ok_anons;
 
     Data::Visitor::Callback->new(
-        ignore_return_values => 1,
-        object => sub {
+        object => "visit_ref",
+        object_final => sub {
             my ( $self, $obj ) = @_;
             #MooseX::Compile::load_classes(ref $obj);
-            Class::Autouse->autouse(ref $obj);
+
+            die "Invalid object loaded from cached meta: $obj"
+                if ref($obj) =~ /^MooseX::Compile::/;
+
+            # can't load an __ANON__ from the store without some fixing
+            die "Instance of anonymous class cannot be thawed"
+                if ref($obj) =~ /^Class::MOP::Class::__ANON__::/x and not exists $ok_anons{$obj};
+
+            if ( ref($obj) eq 'Moose::Meta::Attribute' ) { # FIXME WTF WTF WTF?!!
+                eval "require " . ref($obj);
+            } else {
+                Class::Autouse->autouse(ref($obj));
+            }
+            return $obj;
         },
-        "Moose::Meta::Class"     => "visit_ref",
-        "Moose::Meta::Method"    => "visit_ref",
-        "Moose::Meta::Attribute" => "visit_ref",
+        "MooseX::Compile::mangled::immutable_metaclass" => sub {
+            my ( $self, $spec ) = @_;
+            my ( $class, $orig_class, $options ) = @{ $spec }{qw(class orig_class options)};
+
+            bless $class, $orig_class;
+
+            require Class::MOP::Immutable;
+            my $t = Class::MOP::Immutable->new( $class, $options );
+            my $new_metaclass = $t->create_immutable_metaclass;
+            bless $class, $new_metaclass->name;
+
+            $ok_anons{$class}++;
+
+            return $class;
+        },
         "MooseX::Compile::mangled::constraint" => sub {
             my ( $self, $sym ) = @_;
             require Moose::Util::TypeConstraints;
-            $_ = Moose::Util::TypeConstraints::find_type_constraint($$sym);
+            Moose::Util::TypeConstraints::find_type_constraint($sym->{name});
         },
         "MooseX::Compile::mangled::subref" => sub {
             my ( $self, $sym ) = @_;
             no strict 'refs';
-            $_ = \&{ $$sym };
+            if ( my $file = $sym->{file} ) {
+                require $file;
+            }
+            \&{ $sym->{name} };
         },
     )->visit( $meta );
-
-    $meta;
 }
 
 sub load_raw_cached_meta {
@@ -380,6 +499,37 @@ sub MooseX::Compile::Scope::Guard::DESTROY {
     $self->[0]->();
 }
 
+{
+    package MooseX::Compile::mangled::immutable_metaclass;
+}
+
+{
+    package MooseX::Compile::MetaBlackHole;
+    # FIXME use Class::MOP::Immutable's opts?
+
+    sub DESTROY {}
+
+    sub make_immutable {}
+
+    sub name {
+        my $self = shift;
+        $self->{name};
+    }
+
+    sub superclasses {
+        my $self = shift;
+        no strict 'refs';
+        @{ $self->name . '::ISA' };
+    }
+
+    sub AUTOLOAD {
+        my $self = shift;
+        require Carp;
+        Carp::carp sprintf "ignoring meta method %s till pmc finishes loading", our $AUTOLOAD;
+        return;
+    }
+}
+
 __PACKAGE__;
 
 __END__
@@ -396,9 +546,12 @@ MooseX::Compile - Moose ♥ .pmc
 
     use Moose;
 
-	use MooseX::Compile; # defaults to maximal caching
+	use MooseX::Compile;
 
     # your moose class normally here
+
+    # on the second load of your module the metaclass instance and all
+    # generated code will be loaded from a cached copy
 
 =head1 DESCRIPTION
 
