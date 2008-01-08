@@ -402,30 +402,31 @@ sub load_cached_meta {
 sub inflate_cached_meta {
     my ( $self, $meta ) = @_;
 
+    #$Class::Autouse::DEBUG = 1;
     require Class::Autouse;
 
     Class::Autouse->autouse('Moose::Meta::Class');
     Class::Autouse->autouse('Moose::Meta::Instance');
+    Class::Autouse->autouse('Moose::Meta::TypeConstraint');
+    Class::Autouse->autouse('Moose::Meta::TypeCoercion');
+    Class::Autouse->autouse('Moose::Meta::Attribute');
 
     require Data::Visitor::Callback;
 
     fieldhash my %ok_anons;
+    fieldhash my %found_anons;
 
-    Data::Visitor::Callback->new(
+    my $thawed_meta = Data::Visitor::Callback->new(
         object => "visit_ref",
         object_final => sub {
             my ( $self, $obj ) = @_;
-            #MooseX::Compile::load_classes(ref $obj);
 
             die "Invalid object loaded from cached meta: $obj"
                 if ref($obj) =~ /^MooseX::Compile::/;
 
             # can't load an __ANON__ from the store without some fixing
-            die "Instance of anonymous class cannot be thawed"
-                if ref($obj) =~ /^Class::MOP::Class::__ANON__::/x and not exists $ok_anons{$obj};
-
-            if ( ref($obj) eq 'Moose::Meta::Attribute' ) { # FIXME WTF WTF WTF?!!
-                eval "require " . ref($obj);
+            if ( ref($obj) =~ /^Class::MOP::Class::__ANON__::/x ) {
+                $found_anons{$obj}++;
             } else {
                 Class::Autouse->autouse(ref($obj));
             }
@@ -460,6 +461,12 @@ sub inflate_cached_meta {
             \&{ $sym->{name} };
         },
     )->visit( $meta );
+
+
+    delete @found_anons{keys %ok_anons};
+    die "Instance of anonymous class cannot be thawed: " . keys %found_anons if scalar keys %found_anons;
+
+    return $thawed_meta;
 }
 
 sub load_raw_cached_meta {
