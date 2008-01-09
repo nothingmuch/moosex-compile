@@ -9,6 +9,28 @@
 #    }
 #}
 
+BEGIN {
+    unshift @INC, sub {
+        my ( $self, $file ) = @_;
+
+        if ( $ENV{MX_COMPILE_CLEAN} ) {
+            foreach my $dir ( grep { not ref } @INC ) {
+                my $full = "$dir/$file";
+
+                my $pmc = "${full}c";
+                ( my $mopc = $full ) =~ s/\.pm$/.mopc/;
+
+                if ( -e $pmc && -e $mopc ) {
+                    unlink $pmc or die "Can't remove pmc file (unlink($pmc)): $!";
+                    unlink $mopc or die "Can't remove cached metaclass (unlink($mopc)): $!";
+                }
+            }
+        }
+
+        return;
+    }
+}
+
 package MooseX::Compile;
 
 use strict;
@@ -153,16 +175,29 @@ sub store_meta {
     my $meta = Data::Visitor::Callback->new(
         "object" => sub {
             my ( $self, $obj ) = @_;
-            $self->visit_ref($obj) unless $obj->isa("Moose::Meta::TypeConstraint");
+
+            return $obj if $obj->isa("Moose::Meta::TypeConstraint");
+
+            $self->visit_ref($obj);
+        },
+        object_final => sub {
+            my ( $self, $obj ) = @_;
+
+            if ( ref($obj) =~ /^Class::MOP::Class::__ANON__::/x ) {
+                die "Instance of anonymous class cannot be thawed: $obj";
+            }
+
+            return $obj;
         },
         "Class::MOP::Class" => sub {
             my ( $self, $meta ) = @_;
 
             if ( $meta->is_immutable ) {
+                my $options = $meta->immutable_transformer->options;
+                bless( $meta, $meta->{___original_class} ), # it's a copy, we can rebless
                 return bless {
                     class      => $meta,
-                    orig_class => $meta->{___original_class},
-                    options    => $meta->immutable_transformer->options,
+                    options    => $options,
                 }, "MooseX::Compile::mangled::immutable_metaclass";
             }
             
@@ -170,7 +205,7 @@ sub store_meta {
                 warn "Can't reliably store anonymouse metaclasses yet";
             }
 
-            $meta;
+            return $meta;
         },
         "Moose::Meta::TypeConstraint" => sub {
             my ( $self, $constraint ) = @_;
@@ -211,7 +246,13 @@ sub store_meta {
     )->visit( $class->meta );
 
     require Storable;
-    Storable::nstore( $meta, $self->cached_meta_file_for_class( $class, $file ) );
+    eval { Storable::nstore( $meta, $self->cached_meta_file_for_class( $class, $file ) ) };
+
+    if ( $@ ) {
+        require YAML;
+        $YAML::UseCode = 1;
+        die join("\n", $@, YAML::Dump($meta) );
+    }
 }
 
 sub get_generated_methods {
@@ -237,7 +278,6 @@ sub compile_method {
     my $d = B::Deparse->new;
 
     use Data::Dumper;
-
 
     my $body = $method->body;
 
@@ -334,6 +374,7 @@ META
 # Register this file as a PMC so MooseX::Compile can hax0r it
 BEGIN {
     require MooseX::Compile;
+    BEGIN { warn "loading PMC for " . __FILE__ }
     \$MooseX::Compile::known_pmc_files{+__FILE__} = 1;
 }
 
@@ -364,12 +405,17 @@ my \$__mx_compile_run_at_end = bless [ sub {
 
 $methods
 
+    ${class}::__mx_compile_post_hook()
+        if defined \&${class}::__mx_compile_post_hook;
+
 } ], "MooseX::Compile::Scope::Guard";
 
 # line 1
 PREAMBLE
 
     print $pmc_fh $pm;
+
+    close $pmc_fh;
 }
 
 sub load_moose {
@@ -413,9 +459,6 @@ sub inflate_cached_meta {
 
     require Data::Visitor::Callback;
 
-    fieldhash my %ok_anons;
-    fieldhash my %found_anons;
-
     my $thawed_meta = Data::Visitor::Callback->new(
         object => "visit_ref",
         object_final => sub {
@@ -424,26 +467,20 @@ sub inflate_cached_meta {
             die "Invalid object loaded from cached meta: $obj"
                 if ref($obj) =~ /^MooseX::Compile::/;
 
-            # can't load an __ANON__ from the store without some fixing
-            if ( ref($obj) =~ /^Class::MOP::Class::__ANON__::/x ) {
-                $found_anons{$obj}++;
-            } else {
+            unless ( ref($obj) =~ /^Class::MOP::Class::__ANON__::/x ) {
                 Class::Autouse->autouse(ref($obj));
             }
+
             return $obj;
         },
         "MooseX::Compile::mangled::immutable_metaclass" => sub {
             my ( $self, $spec ) = @_;
-            my ( $class, $orig_class, $options ) = @{ $spec }{qw(class orig_class options)};
-
-            bless $class, $orig_class;
+            my ( $class, $options ) = @{ $spec }{qw(class options)};
 
             require Class::MOP::Immutable;
             my $t = Class::MOP::Immutable->new( $class, $options );
             my $new_metaclass = $t->create_immutable_metaclass;
             bless $class, $new_metaclass->name;
-
-            $ok_anons{$class}++;
 
             return $class;
         },
@@ -461,10 +498,6 @@ sub inflate_cached_meta {
             \&{ $sym->{name} };
         },
     )->visit( $meta );
-
-
-    delete @found_anons{keys %ok_anons};
-    die "Instance of anonymous class cannot be thawed: " . keys %found_anons if scalar keys %found_anons;
 
     return $thawed_meta;
 }
@@ -525,6 +558,7 @@ sub MooseX::Compile::Scope::Guard::DESTROY {
 
     sub superclasses {
         my $self = shift;
+        die "Can't set superclasses in class body for compiled classes, use __mx_compile_post_hook" if @_;
         no strict 'refs';
         @{ $self->name . '::ISA' };
     }

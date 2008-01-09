@@ -8,6 +8,8 @@ use Test::Exception;
 
 use lib "t/lib";
 
+use MooseX::Compile (); # clean hook
+
 use ok "Point";
 use ok "Point3D";
 
