@@ -7,6 +7,8 @@ use warnings;
 
 use constant DEBUG => $ENV{MX_COMPILE_DEBUG};
 
+our $VERSION = "0.01";
+
 #BEGIN {
 #    require Carp::Heavy;
 #    unshift @INC, sub {
@@ -34,7 +36,7 @@ BEGIN {
                 Moose::Meta::TypeConstraint
                 Moose::Meta::TypeCoercion
             ) {
-                ( my $pkg_file = "${pkg}.pm" ) =~ s{::}{/}g;
+                ( my $pkg_file = "$pkg.pm" ) =~ s{::}{/}g;
                 require Carp and Carp::carp "loading $pkg" if $file eq $pkg_file;
             }
         }
@@ -47,7 +49,7 @@ BEGIN {
                 ( my $mopc = $full ) =~ s/\.pm$/.mopc/;
 
                 if ( -e $pmc && -e $mopc ) {
-                    warn "Removing compiled class for file: $file" if DEBUG;
+                    warn "removing compiled class for file '$file'\n" if DEBUG;
                     unlink $pmc or die "Can't remove pmc file (unlink($pmc)): $!";
                     unlink $mopc or die "Can't remove cached metaclass (unlink($mopc)): $!";
                 }
@@ -66,6 +68,7 @@ if ( $ENV{MX_COMPILE_PRELOAD_MOOSE} ) {
 }
 
 our %known_pmc_files;
+our %compiled_classes;
 
 sub import {
     my ($self, @args) = @_;
@@ -75,6 +78,7 @@ sub import {
     if ( $known_pmc_files{$file} ) {
         return $self->load_pmc( $class, $file, @args );
     } else {
+        warn "class '$class' requires compilation\n" if DEBUG;
         require Check::UnitCheck;
         Check::UnitCheck::unitcheckify(sub { $self->end_of_file_execution( $class, $file, @args ) });
 
@@ -84,12 +88,25 @@ sub import {
     }
 }
 
+sub check_version {
+    my ( $self, %args ) = @_;
+
+    my ( $class, $version, $file ) = @args{qw(class version file)};
+
+    if ( $version gt $VERSION or ( $version lt $VERSION - 1 ) ) {
+        require Carp;
+        my ( $basename ) = ( $class =~ /([^:]+)$/ );
+        Carp::croak "class '$class' was compiled by an incompatible version of MooseX::Compile ($version, this is $VERSION). "
+                  . "Please remove the files '$basename.pmc' and '$basename.mopc' next to '$file' and recompile the class";
+    }
+}
+
 sub load_classes {
     my ( $self, @classes ) = @_;
 
     foreach my $class ( @classes ) {
         next if $class->can("meta");
-        ( my $file = "${class}.pm" ) =~ s{::}{/}g;
+        ( my $file = "$class.pm" ) =~ s{::}{/}g;
         require $file;
     }
 }
@@ -158,8 +175,11 @@ sub subref ($;$) {
 
 sub end_of_file_execution {
     my ( $self, $class, $file, @args ) = @_;
-    
+ 
+    warn "compilation unit of class '$class' finished, compiling\n" if DEBUG;
+
     if ( $ENV{MX_COMPILE_IMPLICIT_ANCESTORS} ) {
+        warn "implicitly compiling all ancestors of class '$class'\n" if DEBUG;
         $self->compile_ancestors( $class );
     }
 
@@ -169,6 +189,13 @@ sub end_of_file_execution {
 sub compile_class {
     my ( $self, $class, $file, @args ) = @_;
 
+    if ( $compiled_classes{$class}++ ) {
+        warn "already compiled class '$class'\n" if DEBUG;
+        return;
+    }
+
+    my $t = times;
+
     unless ( defined $file ) {
         ( my $class_file = "$class.pm" ) =~ s{::}{/}g;
         $file = $INC{$class_file};
@@ -177,6 +204,8 @@ sub compile_class {
     $self->store_meta( $class, $file, @args );
 
     $self->write_pmc_file( $class, $file, @args );
+
+    warn "compilation of .pmc and .mopc for class '$class' took " . ( times - $t ) . "s\n" if DEBUG;
 }
 
 sub compile_ancestors {
@@ -184,6 +213,7 @@ sub compile_ancestors {
 
     foreach my $superclass ( reverse $class->meta->linearized_isa ) {
         next if $superclass eq $class;
+        warn "compiling '$class' superclass '$superclass'\n" if DEBUG;
         $self->compile_class( $superclass, $files{$superclass} );
     }
 }
@@ -234,7 +264,7 @@ sub store_meta {
             if ( defined ( my $name = $constraint->name ) ) {
                 return sym $name, "constraint";
             } else {
-                warn "FOOO";
+                warn "Anonymous constraint $constraint left in metaclass";
                 return $constraint;
             }
         },
@@ -267,6 +297,8 @@ sub store_meta {
     )->visit( $class->meta );
 
     require Storable;
+
+    local $@;
     eval { Storable::nstore( $meta, $self->cached_meta_file_for_class( $class, $file ) ) };
 
     if ( $@ ) {
@@ -274,6 +306,13 @@ sub store_meta {
         $YAML::UseCode = 1;
         die join("\n", $@, YAML::Dump($meta) );
     }
+    
+    if ( DEBUG ) {
+        ( my $short_name = "${class}.mopc" ) =~ s{::}{/}g;
+        warn "stored $meta for $short_name\n";
+    }
+
+    return 1;
 }
 
 sub get_generated_methods {
@@ -384,6 +423,8 @@ sub write_pmc_file {
 
     my $methods = $self->compile_methods( $class, $file );
 
+    ( my $short_name = "$class.pm" ) =~ s{::}{/}g;
+
     $methods .= <<META;
 {
     no warnings 'redefine';
@@ -392,10 +433,12 @@ sub write_pmc_file {
 META
     
     print $pmc_fh <<PREAMBLE;
+my \$__mx_compile_t; BEGIN { \$__mx_compile_t = times }
 # Register this file as a PMC so MooseX::Compile can hax0r it
 BEGIN {
     require MooseX::Compile;
-    warn "Found .pmc file for " . __FILE__ . "\n" if MooseX::Compile::DEBUG();
+    MooseX::Compile->check_version(class => "$class", file => __FILE__, version => "$MooseX::Compile::VERSION");
+    warn "found .pmc file for '$short_name'\\n" if MooseX::Compile::DEBUG();
     \$MooseX::Compile::known_pmc_files{+__FILE__} = 1;
 }
 
@@ -429,8 +472,10 @@ $methods
     ${class}::__mx_compile_post_hook()
         if defined \&${class}::__mx_compile_post_hook;
 
-    warn "bootrap of $class finished\n" if MooseX::Compile::DEBUG();
+    warn "bootstrap of class '$class' finished in " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::DEBUG();
 } ], "MooseX::Compile::Scope::Guard";
+
+BEGIN { warn "giving control back to original '$short_name', bootstrap preamble took " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::DEBUG() }
 
 # line 1
 PREAMBLE
@@ -438,6 +483,8 @@ PREAMBLE
     print $pmc_fh $pm;
 
     close $pmc_fh;
+
+    warn "wrote PMC file '${short_name}c'\n" if DEBUG;
 }
 
 sub load_moose {
@@ -453,7 +500,7 @@ sub load_pmc {
 sub load_cached_meta {
     my ( $self, $class, $file ) = @_;
 
-    warn "Loading metaclass for $class from cached file\n" if DEBUG;
+    warn "loading metaclass for class '$class' from cached file\n" if DEBUG;
 
     my $meta = $self->inflate_cached_meta(
         $self->load_raw_cached_meta($class, $file),
@@ -465,6 +512,8 @@ sub load_cached_meta {
         no warnings 'redefine';
         *{ "${class}::meta" } = sub { $meta };
     }
+
+    warn "registering loaded metaclass '$meta' for class '$class;\n";
 
     Class::MOP::store_metaclass_by_name($class, $meta);
 }
@@ -482,7 +531,7 @@ sub inflate_cached_meta {
         Moose::Meta::TypeCoercion
         Moose::Meta::Attribute
     ) {
-        #warn "Marking $class for autouse\n" if DEBUG;
+        #warn "marking $class for autouse\n" if DEBUG;
         Class::Autouse->autouse($class);
     }
 
@@ -497,7 +546,7 @@ sub inflate_cached_meta {
                 if ref($obj) =~ /^MooseX::Compile::/;
 
             unless ( ref($obj) =~ /^Class::MOP::Class::__ANON__::/x ) {
-                #warn "Marking " . ref($obj) . " for autouse\n" if DEBUG;
+                #warn "marking " . ref($obj) . " for autouse\n" if DEBUG;
                 Class::Autouse->autouse(ref($obj));
             }
 
@@ -518,7 +567,7 @@ sub inflate_cached_meta {
         },
         "MooseX::Compile::mangled::constraint" => sub {
             my ( $self, $sym ) = @_;
-            warn "loading symbolic type constraint named $sym->{name} from mopc\n" if DEBUG;
+            warn "loading type constraint named '$sym->{name}' from cached metaclass\n" if DEBUG;
             require Moose::Util::TypeConstraints;
             Moose::Util::TypeConstraints::find_type_constraint($sym->{name});
         },
