@@ -500,6 +500,8 @@ sub load_pmc {
 sub load_cached_meta {
     my ( $self, $class, $file ) = @_;
 
+    my $t = times;
+
     warn "loading metaclass for class '$class' from cached file\n" if DEBUG;
 
     my $meta = $self->inflate_cached_meta(
@@ -513,7 +515,7 @@ sub load_cached_meta {
         *{ "${class}::meta" } = sub { $meta };
     }
 
-    warn "registering loaded metaclass '$meta' for class '$class;\n";
+    warn "registering loaded metaclass '$meta' for class '$class', loaded in " . (times - $t) . "s\n";
 
     Class::MOP::store_metaclass_by_name($class, $meta);
 }
@@ -567,7 +569,7 @@ sub inflate_cached_meta {
         },
         "MooseX::Compile::mangled::constraint" => sub {
             my ( $self, $sym ) = @_;
-            warn "loading type constraint named '$sym->{name}' from cached metaclass\n" if DEBUG;
+            warn "loading type constraint named '$sym->{name}' in cached metaclass\n" if DEBUG;
             require Moose::Util::TypeConstraints;
             Moose::Util::TypeConstraints::find_type_constraint($sym->{name});
         },
@@ -612,10 +614,6 @@ sub cached_meta_file_for_class {
         return Path::Class::dir($meta_dir)->file( "$mangled_class.mopc" );
     }
 }
-
-sub mockattr::type_constraint { bless {}, "mockconstraint" }
-
-sub mockconstraint::_compiled_type_constraint { sub { 1 } }
 
 sub MooseX::Compile::Scope::Guard::DESTROY {
     my $self = shift;
