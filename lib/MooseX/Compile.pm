@@ -76,11 +76,14 @@ sub import {
     my ( $class, $file ) = caller();
 
     if ( $known_pmc_files{$file} ) {
-        return $self->load_pmc( $class, $file, @args );
+        return $self->import_from_pmc( $class, $file, @args );
     } else {
         warn "class '$class' requires compilation\n" if DEBUG;
         require Check::UnitCheck;
-        Check::UnitCheck::unitcheckify(sub { $self->end_of_file_execution( $class, $file, @args ) });
+        Check::UnitCheck::unitcheckify(sub {
+            warn "compilation unit of class '$class' calling UNITCHECK\n" if DEBUG;
+            $self->end_of_file_execution( $class, $file, @args )
+        });
 
         require Moose;
         shift; unshift @_, "Moose";
@@ -175,8 +178,6 @@ sub subref ($;$) {
 
 sub end_of_file_execution {
     my ( $self, $class, $file, @args ) = @_;
- 
-    warn "compilation unit of class '$class' finished, compiling\n" if DEBUG;
 
     if ( $ENV{MX_COMPILE_IMPLICIT_ANCESTORS} ) {
         warn "implicitly compiling all ancestors of class '$class'\n" if DEBUG;
@@ -493,7 +494,7 @@ sub load_moose {
     require Moose::Util::TypeConstraints;
 }
 
-sub load_pmc {
+sub import_from_pmc {
 
 }
 
