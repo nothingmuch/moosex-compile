@@ -1,5 +1,12 @@
 #!/usr/bin/perl
 
+package MooseX::Compile;
+
+use strict;
+use warnings;
+
+use constant DEBUG => $ENV{MX_COMPILE_DEBUG};
+
 #BEGIN {
 #    require Carp::Heavy;
 #    unshift @INC, sub {
@@ -13,6 +20,25 @@ BEGIN {
     unshift @INC, sub {
         my ( $self, $file ) = @_;
 
+        if ( DEBUG ) {
+            foreach my $pkg qw(
+                Moose
+                Moose::Meta::Class
+
+                Class::MOP
+                Class::MOP::Class
+
+                metaclass
+
+                Moose::Util::TypeConstraints
+                Moose::Meta::TypeConstraint
+                Moose::Meta::TypeCoercion
+            ) {
+                ( my $pkg_file = "${pkg}.pm" ) =~ s{::}{/}g;
+                require Carp and Carp::carp "loading $pkg" if $file eq $pkg_file;
+            }
+        }
+
         if ( $ENV{MX_COMPILE_CLEAN} ) {
             foreach my $dir ( grep { not ref } @INC ) {
                 my $full = "$dir/$file";
@@ -21,6 +47,7 @@ BEGIN {
                 ( my $mopc = $full ) =~ s/\.pm$/.mopc/;
 
                 if ( -e $pmc && -e $mopc ) {
+                    warn "Removing compiled class for file: $file" if DEBUG;
                     unlink $pmc or die "Can't remove pmc file (unlink($pmc)): $!";
                     unlink $mopc or die "Can't remove cached metaclass (unlink($mopc)): $!";
                 }
@@ -31,14 +58,8 @@ BEGIN {
     }
 }
 
-package MooseX::Compile;
-
-use strict;
-use warnings;
 
 use Scalar::Util qw(blessed);
-
-use Hash::Util qw(fieldhash);
 
 if ( $ENV{MX_COMPILE_PRELOAD_MOOSE} ) {
     __PACKAGE__->load_moose();
@@ -374,7 +395,7 @@ META
 # Register this file as a PMC so MooseX::Compile can hax0r it
 BEGIN {
     require MooseX::Compile;
-    BEGIN { warn "loading PMC for " . __FILE__ }
+    warn "Found .pmc file for " . __FILE__ . "\n" if MooseX::Compile::DEBUG();
     \$MooseX::Compile::known_pmc_files{+__FILE__} = 1;
 }
 
@@ -408,6 +429,7 @@ $methods
     ${class}::__mx_compile_post_hook()
         if defined \&${class}::__mx_compile_post_hook;
 
+    warn "bootrap of $class finished\n" if MooseX::Compile::DEBUG();
 } ], "MooseX::Compile::Scope::Guard";
 
 # line 1
@@ -431,6 +453,8 @@ sub load_pmc {
 sub load_cached_meta {
     my ( $self, $class, $file ) = @_;
 
+    warn "Loading metaclass for $class from cached file\n" if DEBUG;
+
     my $meta = $self->inflate_cached_meta(
         $self->load_raw_cached_meta($class, $file),
         $class, $file
@@ -451,11 +475,16 @@ sub inflate_cached_meta {
     #$Class::Autouse::DEBUG = 1;
     require Class::Autouse;
 
-    Class::Autouse->autouse('Moose::Meta::Class');
-    Class::Autouse->autouse('Moose::Meta::Instance');
-    Class::Autouse->autouse('Moose::Meta::TypeConstraint');
-    Class::Autouse->autouse('Moose::Meta::TypeCoercion');
-    Class::Autouse->autouse('Moose::Meta::Attribute');
+    foreach my $class qw(
+        Moose::Meta::Class
+        Moose::Meta::Instance
+        Moose::Meta::TypeConstraint
+        Moose::Meta::TypeCoercion
+        Moose::Meta::Attribute
+    ) {
+        #warn "Marking $class for autouse\n" if DEBUG;
+        Class::Autouse->autouse($class);
+    }
 
     require Data::Visitor::Callback;
 
@@ -468,6 +497,7 @@ sub inflate_cached_meta {
                 if ref($obj) =~ /^MooseX::Compile::/;
 
             unless ( ref($obj) =~ /^Class::MOP::Class::__ANON__::/x ) {
+                #warn "Marking " . ref($obj) . " for autouse\n" if DEBUG;
                 Class::Autouse->autouse(ref($obj));
             }
 
@@ -481,11 +511,14 @@ sub inflate_cached_meta {
             my $t = Class::MOP::Immutable->new( $class, $options );
             my $new_metaclass = $t->create_immutable_metaclass;
             bless $class, $new_metaclass->name;
+            
+            warn "recreated immutable metaclass for " . $class->name . " as " . $new_metaclass->name . "\n" if DEBUG;
 
             return $class;
         },
         "MooseX::Compile::mangled::constraint" => sub {
             my ( $self, $sym ) = @_;
+            warn "loading symbolic type constraint named $sym->{name} from mopc\n" if DEBUG;
             require Moose::Util::TypeConstraints;
             Moose::Util::TypeConstraints::find_type_constraint($sym->{name});
         },
@@ -493,6 +526,7 @@ sub inflate_cached_meta {
             my ( $self, $sym ) = @_;
             no strict 'refs';
             if ( my $file = $sym->{file} ) {
+                warn "loading file $sym->{file} for the definition of \&$sym->{name}\n" if DEBUG && !exists($INC{$sym->{file}});
                 require $file;
             }
             \&{ $sym->{name} };
