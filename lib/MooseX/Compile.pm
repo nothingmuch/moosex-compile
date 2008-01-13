@@ -37,7 +37,7 @@ BEGIN {
                 Moose::Meta::TypeCoercion
             ) {
                 ( my $pkg_file = "$pkg.pm" ) =~ s{::}{/}g;
-                require Carp and Carp::carp "loading $pkg" if $file eq $pkg_file;
+                require Carp and Carp::carp("loading $pkg") if $file eq $pkg_file;
             }
         }
 
@@ -99,8 +99,8 @@ sub check_version {
     if ( $version gt $VERSION or ( $version lt $VERSION - 1 ) ) {
         require Carp;
         my ( $basename ) = ( $class =~ /([^:]+)$/ );
-        Carp::croak "class '$class' was compiled by an incompatible version of MooseX::Compile ($version, this is $VERSION). "
-                  . "Please remove the files '$basename.pmc' and '$basename.mopc' next to '$file' and recompile the class";
+        Carp::croak( "class '$class' was compiled by an incompatible version of MooseX::Compile ($version, this is $VERSION). "
+                   . "Please remove the files '$basename.pmc' and '$basename.mopc' next to '$file' and recompile the class" );
     }
 }
 
@@ -304,6 +304,7 @@ sub store_meta {
 
     if ( $@ ) {
         require YAML;
+        no warnings 'once';
         $YAML::UseCode = 1;
         die join("\n", $@, YAML::Dump($meta) );
     }
