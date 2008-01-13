@@ -516,7 +516,7 @@ sub load_cached_meta {
         *{ "${class}::meta" } = sub { $meta };
     }
 
-    warn "registering loaded metaclass '$meta' for class '$class', loaded in " . (times - $t) . "s\n";
+    warn "registering loaded metaclass '$meta' for class '$class', loaded in " . (times - $t) . "s\n" if DEBUG;
 
     Class::MOP::store_metaclass_by_name($class, $meta);
 }
