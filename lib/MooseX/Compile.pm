@@ -9,17 +9,6 @@ use warnings;
 use constant DEBUG => MooseX::Compile::Base::DEBUG();
 use constant default_compiler_class => "MooseX::Compile::Compiler";
 
-use Scalar::Util qw(blessed);
-
-#BEGIN {
-#    require Carp::Heavy;
-#    unshift @INC, sub {
-#        my ( $self, $file ) = @_;
-#        warn "loading $file" . Carp::longmess if $file =~ /MOP|meta|Moose/i;
-#        return;
-#    }
-#}
-
 BEGIN {
     unshift @INC, sub {
         my ( $self, $file ) = @_;

@@ -9,10 +9,13 @@ use warnings;
 use Data::Dump qw(dump);
 use Data::Visitor::Callback;
 use Storable;
+use B;
+use B::Deparse;
+use PadWalker;
 
 our %compiled_classes;
 
-sub DEBUG () { 0 }
+use constant DEBUG => MooseX::Compile::Base::DEBUG();
 
 sub new {
     my ( $class, %args ) = @_;
@@ -49,7 +52,6 @@ sub sym ($$;@) {
 
 sub code_name ($;$) {
     my ( $code, $cv ) = @_;
-    require B;
     $cv ||= B::svref_2object($code);
     local $@;
     return eval { join("::", $cv->STASH->NAME, $cv->GV->NAME) };
@@ -78,7 +80,6 @@ sub subref ($;$) {
     my ( $code, $name ) = @_;
 
     if ( ref $code ) {
-        require B;
         my $cv = B::svref_2object($code);
         $name ||= code_name($code, $cv);
         if ( $name && verify_code_name($code,$name) ) {
@@ -238,9 +239,6 @@ sub compile_methods {
 sub compile_method {
     my ( $self, $class, $method ) = @_;
 
-    require B::Deparse;
-    require PadWalker;
-
     my $d = B::Deparse->new;
 
     use Data::Dumper;
@@ -287,8 +285,6 @@ sub compile_method {
 sub _value_to_perl {
     my ( $self, $value ) = @_;
 
-    require Data::Dump;
-
     ( (ref($value)||'') eq 'CODE'
         ? $self->_subref_to_perl($value)
         : Data::Dump::dump($value) ) 
@@ -300,14 +296,12 @@ sub _subref_to_perl {
     my %rev_inc = reverse %INC;
 
     if ( ( my $name = code_name($subref) ) !~ /__ANON__$/ ) {
-        require B;
         if ( -f ( my $file = B::svref_2object($subref)->FILE ) ) {
             return qq|do { require "\Q$rev_inc{$file}\E"; \\&$name }|;
         } else {
             return '\&' . $name;
         }
     } else {
-        require B::Deparse;
         "sub " . B::Deparse->new->coderef2text($subref);
     }
 }
