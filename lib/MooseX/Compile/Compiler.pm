@@ -90,7 +90,7 @@ sub subref ($;$) {
             warn "$code has name '$name', but it doesn't point back to the cv" if $name;
             require Data::Dumper;
             no strict 'refs';
-            $Data::Dumper::Deparse = 1;
+            local $Data::Dumper::Deparse = 1;
             warn Data::Dumper::Dumper({
                 name => $name,
                 name_strval => ("". \&$name),
@@ -240,8 +240,6 @@ sub compile_method {
     my ( $self, $class, $method ) = @_;
 
     my $d = B::Deparse->new;
-
-    use Data::Dumper;
 
     my $body = $method->body;
 
