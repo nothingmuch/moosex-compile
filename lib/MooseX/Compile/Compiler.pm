@@ -589,13 +589,18 @@ sub pmc_preamble {
 
     $args{all_symbols} = { $self->extract_code_symbols(%args) };
 
-    return join("\n",
+    my $code = join("\n",
         $self->pmc_preamble_comment(%args),
         $self->pmc_preamble_header(%args),
         $self->pmc_preamble_setup_env(%args),
         $self->pmc_preamble_generated_code(%args),
         $self->pmc_preamble_footer(%args),
-    )
+    );
+
+    use Data::Dumper;
+    warn "leftover symbols: " . Dumper($args{all_symbols});
+
+    return $code;
 }
 
 sub pmc_preamble_footer {
