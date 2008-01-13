@@ -5,7 +5,7 @@ package MooseX::Compile;
 use strict;
 use warnings;
 
-use constant DEBUG => $ENV{MX_COMPILE_DEBUG};
+use constant DEBUG => our $DEBUG || $ENV{MX_COMPILE_DEBUG};
 
 our $VERSION = "0.01";
 
