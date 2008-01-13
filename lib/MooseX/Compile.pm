@@ -541,7 +541,7 @@ sub inflate_cached_meta {
     require Data::Visitor::Callback;
 
     my $thawed_meta = Data::Visitor::Callback->new(
-        object => "visit_ref",
+        object_no_class => "visit_ref",
         object_final => sub {
             my ( $self, $obj ) = @_;
 
@@ -558,6 +558,8 @@ sub inflate_cached_meta {
         "MooseX::Compile::mangled::immutable_metaclass" => sub {
             my ( $self, $spec ) = @_;
             my ( $class, $options ) = @{ $spec }{qw(class options)};
+
+            $class = $self->visit_ref($class);
 
             require Class::MOP::Immutable;
             my $t = Class::MOP::Immutable->new( $class, $options );
