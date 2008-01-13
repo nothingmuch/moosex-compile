@@ -286,12 +286,12 @@ sub extract_code_symbols {
     }
 
     return (
-        file => \@file,
-        generated => \@generated,
-        aliased => \@aliased,
-        meta => \@meta,
-        moose => \@moose,
-        unknown => \@moose,
+        file      => \@file, # methods defined inline in the file
+        generated => \@generated, # accessors, constructors, etc
+        aliased   => \@aliased, # role stuff, etc
+        meta      => \@meta, # the 'meta' method
+        moose     => \@moose, # moose's sugar exports
+        unknown   => \@moose,
     );
 }
 
