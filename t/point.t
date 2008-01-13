@@ -14,7 +14,6 @@ use ok "Point";
 use ok "Point3D";
 
 my $point = Point->new(x => 1, y => 2);	
-
 isa_ok($point, 'Point');
 isa_ok($point, 'Moose::Object');
 
@@ -47,6 +46,10 @@ lives_ok {
 dies_ok {
 	Point->new(x => 10, y => 'Foo');
 } '... cannot assign a non-Int to y';
+
+dies_ok {
+	Point->new(x => 'Foo', y => 10);
+} '... cannot assign a non-Int to x';
 
 # Point3D
 
@@ -91,3 +94,66 @@ isa_ok(Point3D->meta, 'Moose::Meta::Class');
 
 isnt(Point->meta, Point3D->meta, '... they are different metaclasses as well');
 
+# poke at Point
+
+is_deeply(
+	[ Point->meta->superclasses ],
+	[ 'Moose::Object' ],
+	'... Point got the automagic base class');
+
+my @Point_methods = qw(meta new x y clear DESTROY);
+my @Point_attrs   = ('x', 'y');
+
+is_deeply(
+	[ sort @Point_methods                 ],
+	[ sort Point->meta->get_method_list() ],
+	'... we match the method list for Point');
+	
+is_deeply(
+	[ sort @Point_attrs                      ],
+	[ sort Point->meta->get_attribute_list() ],
+	'... we match the attribute list for Point');	
+
+foreach my $method (@Point_methods) {
+	ok(Point->meta->has_method($method), '... Point has the method "' . $method . '"');
+}
+
+foreach my $attr_name (@Point_attrs ) {
+	ok(Point->meta->has_attribute($attr_name), '... Point has the attribute "' . $attr_name . '"');    
+    my $attr = Point->meta->get_attribute($attr_name);
+	ok($attr->has_type_constraint, '... Attribute ' . $attr_name . ' has a type constraint');
+	isa_ok($attr->type_constraint, 'Moose::Meta::TypeConstraint');	
+    is($attr->type_constraint->name, 'Int', '... Attribute ' . $attr_name . ' has an Int type constraint');	
+}
+
+# poke at Point3D
+
+is_deeply(
+	[ Point3D->meta->superclasses ],
+	[ 'Point' ],
+	'... Point3D gets the parent given to it');
+
+my @Point3D_methods = qw(new meta clear DESTROY);
+my @Point3D_attrs   = ('z');
+
+is_deeply(
+	[ sort @Point3D_methods                 ],
+	[ sort Point3D->meta->get_method_list() ],
+	'... we match the method list for Point3D');
+	
+is_deeply(
+	[ sort @Point3D_attrs                      ],
+	[ sort Point3D->meta->get_attribute_list() ],
+	'... we match the attribute list for Point3D');	
+
+foreach my $method (@Point3D_methods) {
+	ok(Point3D->meta->has_method($method), '... Point3D has the method "' . $method . '"');
+}
+
+foreach my $attr_name (@Point3D_attrs ) {
+	ok(Point3D->meta->has_attribute($attr_name), '... Point3D has the attribute "' . $attr_name . '"');    
+    my $attr = Point3D->meta->get_attribute($attr_name);
+	ok($attr->has_type_constraint, '... Attribute ' . $attr_name . ' has a type constraint');
+	isa_ok($attr->type_constraint, 'Moose::Meta::TypeConstraint');	
+    is($attr->type_constraint->name, 'Int', '... Attribute ' . $attr_name . ' has an Int type constraint');	
+}
