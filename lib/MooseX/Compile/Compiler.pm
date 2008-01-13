@@ -6,12 +6,15 @@ use base qw(MooseX::Compile::Base);
 use strict;
 use warnings;
 
+use 5.010;
+
 use Data::Dump qw(dump);
 use Data::Visitor::Callback;
 use Storable;
 use B;
 use B::Deparse;
 use PadWalker;
+use Class::Inspector;
 
 our %compiled_classes;
 
@@ -221,23 +224,132 @@ sub store_meta {
     return 1;
 }
 
-sub get_generated_methods {
-    my ( $self, $class ) = @_;
+sub extract_code_symbols {
+    my ( $self, %args ) = @_;
+    my ( $class, $file ) = @args{qw(class file)};
 
-    grep { $_->isa("Class::MOP::Method::Generated") } values %{ $class->meta->get_method_map };
+    my ( @file, @generated, @aliased, @moose, @meta, @unknown );
+
+    my $method_map = $class->meta->get_method_map;
+
+    my %seen;
+
+    foreach my $name ( keys %$method_map ) {
+        $seen{$name}++;
+
+        my $method = $method_map->{$name};
+        my $body = $method->body;
+        my $b = B::svref_2object($body);
+
+        my $entry = { name => $name, meta => $method, body => $body };
+
+        given ( $entry ) {
+            when ( $method->isa("Class::MOP::Method::Generated") ) {
+                push @generated, $entry;
+            }
+
+            when ( $b->FILE eq $file ) {
+                push @file, $entry;
+            }
+
+            when ( $name eq 'meta' and $b->STASH->NAME ~~ [qw(Moose metaclass)] ) {
+                push @meta, $entry;
+            }
+
+            default {
+                use Data::Dumper;
+                $Data::Dumper::Deparse = 1;
+                die Dumper( $entry );
+                push @unknown, $entry;
+            }
+        }
+    }
+
+    my %symbols; @symbols{@{ Class::Inspector->functions($class) || [] }} = @{ Class::Inspector->function_refs($class) || [] };
+
+    foreach my $name ( grep { not $seen{$_}++ } keys %symbols ) {
+        my $body = $symbols{$name};
+        my $b = B::svref_2object( $symbols{$name} );
+        my $entry = { name => $name, body => $body };
+
+        local $@;
+
+        given ( $entry ) {
+            when ( eval { $b->STASH->NAME } ~~ 'Moose' ) {
+                push @moose, $entry;
+            }
+
+            default {
+                push @unknown, $entry;
+            }
+        }
+    }
+
+    return (
+        file => \@file,
+        generated => \@generated,
+        aliased => \@aliased,
+        meta => \@meta,
+        moose => \@moose,
+        unknown => \@moose,
+    );
 }
 
-sub compile_methods {
+sub compile_code_symbols {
     my ( $self, %args ) = @_;
-    my $class = $args{class};
 
-    my @methods = $self->get_generated_methods( $class );
+    my $symbols = $args{all_symbols};
 
-    join("\n\n", ( map { sprintf "*%s = %s;", $_->name => $self->compile_method($class, $_) } @methods ) );
+    my @ret;
+
+    foreach my $category ( @{ $args{'symbol_categories'} } ) {
+        my $method = "compile_${category}_code_symbols";
+        push @ret, $self->$method( %args, symbols => delete($symbols->{$category}) );
+    }
+
+    join "\n\n", @ret;
+}
+
+sub compile_file_code_symbols {
+    # this is already taken care of by the inclusion of the whole .pm after the preamble
+    return;
+}
+
+sub compile_meta_code_symbols {
+    # we fake this one 
+    return;
+}
+
+sub compile_moose_code_symbols {
+    my ( $self, %args ) = @_;
+    return map {
+        my $name = $_->{name};
+        my $proto = prototype($_->{body});
+        $proto = $proto ? "($proto)" : "";
+        "sub $name $proto { }";
+    } @{ $args{symbols} };
+}
+
+
+sub compile_generated_code_symbols {
+    my ( $self, %args ) = @_;
+    map { sprintf "*%s = %s;", $_->name => $self->compile_method(%args, method => $_) } map { $_->{meta} } @{ $args{symbols} };
+}
+
+sub compile_aliased_code_symbols {
+    return;
+}
+
+sub compile_unknown_code_symbols {
+    my ( $self, %args ) = @_;
+    use Data::Dumper;
+    warn "Unknown functions: " . Dumper($args{symbols});
+    return;
 }
 
 sub compile_method {
-    my ( $self, $class, $method ) = @_;
+    my ( $self, %args ) = @_;
+    my ( $class, $method ) = @args{qw(class method)};
 
     my $d = B::Deparse->new;
 
@@ -373,17 +485,17 @@ sub pmc_preamble_setup_env {
 
     my $quoted_class = dump($class);
 
-    # FIXME very partial
+    my $sugar = $self->compile_code_symbols( %args, symbol_categories => [qw(moose)] );
+
     return <<ENV;
 # stub the sugar
 BEGIN {
     package $class;
 
-    sub extends { }
-    sub has { }
-
     my \$fake_meta = bless { name => $quoted_class }, "MooseX::Compile::MetaBlackHole";
     sub meta { \$fake_meta }
+
+$sugar
 
     our \$__mx_is_compiled = 1;
 }
@@ -420,7 +532,7 @@ sub pmc_preamble_generated_code_body {
     return join("\n",
         "package $class;",
         $self->pmc_preamble_define_isa(%args),
-        $self->pmc_preamble_define_methods(%args),
+        $self->pmc_preamble_define_code_symbols(%args),
         $self->pmc_preamble_call_post_hook(%args),
         qq{warn "bootstrap of class '$class' finished in " . (times - \$__mx_compile_t) . "s\n" if MooseX::Compile::DEBUG();},
     );
@@ -437,16 +549,16 @@ MooseX::Compile::Bootstrap->load_classes(\@ISA);
 ISA
 }
 
-sub pmc_preamble_define_methods {
+sub pmc_preamble_define_code_symbols {
     my ( $self, %args ) = @_;
 
     return (
-        $self->compile_methods(%args),
-        $self->pmc_preamble_faked_methods(%args),
+        $self->compile_code_symbols(%args, symbol_categories => [qw(generated aliased)]),
+        $self->pmc_preamble_faked_code_symbols(%args),
     );
 }
 
-sub pmc_preamble_faked_methods {
+sub pmc_preamble_faked_code_symbols {
     my ( $self, %args ) = @_;
 
     return <<METHODS
@@ -471,11 +583,11 @@ sub pmc_preamble {
     my ( $self, %args ) = @_;
     my ( $class, $file ) = @args{qw(class file)};
 
-    my $methods = $self->compile_methods(%args);
-
     ( my $short_name = "$class.pm" ) =~ s{::}{/}g;
 
     $args{short_name} = $short_name;
+
+    $args{all_symbols} = { $self->extract_code_symbols(%args) };
 
     return join("\n",
         $self->pmc_preamble_comment(%args),
