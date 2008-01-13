@@ -257,9 +257,6 @@ sub extract_code_symbols {
             }
 
             default {
-                use Data::Dumper;
-                $Data::Dumper::Deparse = 1;
-                die Dumper( $entry );
                 push @unknown, $entry;
             }
         }
@@ -291,7 +288,7 @@ sub extract_code_symbols {
         aliased   => \@aliased, # role stuff, etc
         meta      => \@meta, # the 'meta' method
         moose     => \@moose, # moose's sugar exports
-        unknown   => \@moose,
+        unknown   => \@unknown,
     );
 }
 
@@ -342,8 +339,6 @@ sub compile_aliased_code_symbols {
 
 sub compile_unknown_code_symbols {
     my ( $self, %args ) = @_;
-    use Data::Dumper;
-    warn "Unknown functions: " . Dumper($args{symbols});
     return;
 }
 
@@ -597,8 +592,12 @@ sub pmc_preamble {
         $self->pmc_preamble_footer(%args),
     );
 
-    use Data::Dumper;
-    warn "leftover symbols: " . Dumper($args{all_symbols});
+    delete @{ $args{all_symbols} }{qw(file meta unknown)};
+
+    if ( keys %{ $args{all_symbols} } ) {
+        use Data::Dumper;
+        warn "leftover symbols: " . Dumper($args{all_symbols});
+    }
 
     return $code;
 }
