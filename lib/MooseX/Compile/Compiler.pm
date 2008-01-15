@@ -6,8 +6,6 @@ use base qw(MooseX::Compile::Base);
 use strict;
 use warnings;
 
-use 5.010;
-
 use Data::Dump qw(dump);
 use Data::Visitor::Callback;
 use Storable;
@@ -232,7 +230,8 @@ sub method_category_filters {
         sub {
             my ( $self, $entry ) = @_;
             local $@;
-            return "meta" if $entry->{name} eq 'meta' and eval { B::svref_2object($entry->{body})->STASH->NAME } ~~ [qw(Moose metaclass)],
+            no warnings 'uninitialized';
+            return "meta" if $entry->{name} eq 'meta' and eval { B::svref_2object($entry->{body})->STASH->NAME } =~ /^(?: Moose | metaclass )/x,
         },
         sub {
             my ( $self, $entry ) = @_;
@@ -253,7 +252,8 @@ sub function_category_filters {
         sub {
             my ( $self, $entry ) = @_;
             local $@;
-            return "moose_sugar" if eval { $b->STASH->NAME } ~~ 'Moose';
+            no warnings 'uninitialized';
+            return "moose_sugar" if eval { $b->STASH->NAME } eq 'Moose';
         },
     );
 }

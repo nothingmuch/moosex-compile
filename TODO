@@ -10,8 +10,6 @@
         - meta caching could change
         - these object might also effect things in the PMC
 
-- Remove 5.10isms
-
 - Inlinable & Deparsable code roles
     - Inlinable
         - just stupid macros with named parameters
