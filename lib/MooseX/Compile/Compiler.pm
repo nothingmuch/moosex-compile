@@ -224,72 +224,84 @@ sub store_meta {
     return 1;
 }
 
-sub extract_code_symbols {
+sub method_category_filters {
     my ( $self, %args ) = @_;
-    my ( $class, $file ) = @args{qw(class file)};
-
-    my ( @file, @generated, @aliased, @moose, @meta, @unknown );
-
-    my $method_map = $class->meta->get_method_map;
-
-    my %seen;
-
-    foreach my $name ( keys %$method_map ) {
-        $seen{$name}++;
-
-        my $method = $method_map->{$name};
-        my $body = $method->body;
-        my $b = B::svref_2object($body);
-
-        my $entry = { name => $name, meta => $method, body => $body };
-
-        given ( $entry ) {
-            when ( $method->isa("Class::MOP::Method::Generated") ) {
-                push @generated, $entry;
-            }
-
-            when ( $b->FILE eq $file ) {
-                push @file, $entry;
-            }
-
-            when ( $name eq 'meta' and $b->STASH->NAME ~~ [qw(Moose metaclass)] ) {
-                push @meta, $entry;
-            }
-
-            default {
-                push @unknown, $entry;
-            }
-        }
-    }
-
-    my %symbols; @symbols{@{ Class::Inspector->functions($class) || [] }} = @{ Class::Inspector->function_refs($class) || [] };
-
-    foreach my $name ( grep { not $seen{$_}++ } keys %symbols ) {
-        my $body = $symbols{$name};
-        my $b = B::svref_2object( $symbols{$name} );
-        my $entry = { name => $name, body => $body };
-
-        local $@;
-
-        given ( $entry ) {
-            when ( eval { $b->STASH->NAME } ~~ 'Moose' ) {
-                push @moose, $entry;
-            }
-
-            default {
-                push @unknown, $entry;
-            }
-        }
-    }
 
     return (
-        file      => \@file, # methods defined inline in the file
-        generated => \@generated, # accessors, constructors, etc
-        aliased   => \@aliased, # role stuff, etc
-        meta      => \@meta, # the 'meta' method
-        moose     => \@moose, # moose's sugar exports
-        unknown   => \@unknown,
+        # FIXME recognize aliased methods
+        sub {
+            my ( $self, $entry ) = @_;
+            local $@;
+            return "meta" if $entry->{name} eq 'meta' and eval { B::svref_2object($entry->{body})->STASH->NAME } ~~ [qw(Moose metaclass)],
+        },
+        sub {
+            my ( $self, $entry ) = @_;
+            return "generated" if $entry->{meta}->isa("Class::MOP::Method::Generated");
+        },
+        sub {
+            my ( $self, $entry ) = @_;
+            return "file" if B::svref_2object($entry->{body})->FILE eq $args{file};
+        },
     );
+}
+
+sub function_category_filters {
+    my ( $self, %args ) = @_;
+    
+    return (
+        # FIXME check for Moose exports, too (Scalar::Util stuff, etc)
+        sub {
+            my ( $self, $entry ) = @_;
+            local $@;
+            return "moose_sugar" if eval { $b->STASH->NAME } ~~ 'Moose';
+        },
+    );
+}
+
+sub extract_code_symbols {
+    my ( $self, %args ) = @_;
+    my $class = $args{class};
+
+    my %seen;
+    my %categorized_symbols;
+
+    {
+        my @method_filters = $self->method_category_filters(%args);
+        my $method_map = $class->meta->get_method_map;
+
+        foreach my $name ( keys %$method_map ) {
+            $seen{$name}++;
+
+            my $method = $method_map->{$name};
+            my $body = $method->body;
+            my $b = B::svref_2object($body);
+
+            my $entry = { name => $name, meta => $method, body => $body };
+
+            foreach my $filter ( @method_filters ) {
+                my $category = $self->$filter($entry) || "unknown_methods";
+                push @{ $categorized_symbols{$category} ||= [] }, $entry;
+            }
+        }
+    }
+
+    {
+        my %symbols; @symbols{@{ Class::Inspector->functions($class) || [] }} = @{ Class::Inspector->function_refs($class) || [] };
+
+        my @function_filters = $self->function_category_filters(%args);
+
+        foreach my $name ( grep { not $seen{$_}++ } keys %symbols ) {
+            my $body = $symbols{$name};
+            my $entry = { name => $name, body => $body };
+
+            foreach my $filter ( @function_filters ) {
+                my $category = $filter->( $entry, %args ) || "unknown_functions";
+                push @{ $categorized_symbols{$category} ||= [] }, $entry;
+            }
+        }
+    }
+
+    return %categorized_symbols;
 }
 
 sub compile_code_symbols {
@@ -317,7 +329,12 @@ sub compile_meta_code_symbols {
     return;
 }
 
-sub compile_moose_code_symbols {
+sub compile_moose_exports_code_symbols {
+    # not yet implemented
+    return;
+}
+
+sub compile_moose_sugar_code_symbols {
     my ( $self, %args ) = @_;
     return map {
         my $name = $_->{name};
@@ -337,8 +354,11 @@ sub compile_aliased_code_symbols {
     return;
 }
 
-sub compile_unknown_code_symbols {
-    my ( $self, %args ) = @_;
+sub compile_unknown_method_code_symbols {
+    return;
+}
+
+sub compile_unknown_function_code_symbols {
     return;
 }
 
@@ -500,7 +520,7 @@ ENV
 sub pmc_preamble_class_def_for_begin {
     my ( $self, %args ) = @_;
 
-    $self->compile_code_symbols( %args, symbol_categories => [qw(moose)] );
+    $self->compile_code_symbols( %args, symbol_categories => [qw(moose_sugar moose_exports)] );
 }
 
 sub pmc_preamble_at_end {
@@ -606,7 +626,7 @@ sub pmc_preamble {
         $self->pmc_preamble_footer(%args),
     );
 
-    delete @{ $args{all_symbols} }{qw(file meta unknown)};
+    delete @{ $args{all_symbols} }{qw(file meta unknown_methods unknown_functions)};
 
     if ( keys %{ $args{all_symbols} } ) {
         use Data::Dumper;
