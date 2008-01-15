@@ -10,6 +10,18 @@
         - meta caching could change
         - these object might also effect things in the PMC
 
+- Sugar features
+    - use Manip::END in addition to Check::UnitCheck as a compilation option
+      (at_exit => 1) for better 5.8 support and also if the metaclass gets
+      changed
+    - Accept options like immutable => 1
+
+- CLI interface
+    - mxcompile lib/
+    - mxcompile --ancestors Foo::Bar
+    - also allow compiling of site_lib/perllib modules in a local dir (.pm and
+      .pmc/.mopc in different directories)
+
 - Inlinable & Deparsable code roles
     - Inlinable
         - just stupid macros with named parameters
