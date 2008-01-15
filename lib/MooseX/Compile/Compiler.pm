@@ -361,7 +361,7 @@ sub compile_method {
             my $name = $_->name;
 
             defined $name
-                ? "Moose::Util::TypeConstraints::find_type_constraint('$name')"
+                ? "Moose::Util::TypeConstraints::find_type_constraint(". dump($name) .")"
                 : "die 'missing constraint'"
         } @$constraints;
         
@@ -402,7 +402,7 @@ sub _subref_to_perl {
 
     if ( ( my $name = code_name($subref) ) !~ /__ANON__$/ ) {
         if ( -f ( my $file = B::svref_2object($subref)->FILE ) ) {
-            return qq|do { require "\Q$rev_inc{$file}\E"; \\&$name }|;
+            return "do { require " . dump($rev_inc{$file}) . "; \\&$name }";
         } else {
             return '\&' . $name;
         }
@@ -480,7 +480,7 @@ sub pmc_preamble_setup_env {
 
     my $quoted_class = dump($class);
 
-    my $sugar = $self->compile_code_symbols( %args, symbol_categories => [qw(moose)] );
+    my $decl = $self->pmc_preamble_class_def_for_begin(%args);
 
     return <<ENV;
 # stub the sugar
@@ -490,11 +490,17 @@ BEGIN {
     my \$fake_meta = bless { name => $quoted_class }, "MooseX::Compile::MetaBlackHole";
     sub meta { \$fake_meta }
 
-$sugar
+$decl
 
     our \$__mx_is_compiled = 1;
 }
 ENV
+}
+
+sub pmc_preamble_class_def_for_begin {
+    my ( $self, %args ) = @_;
+
+    $self->compile_code_symbols( %args, symbol_categories => [qw(moose)] );
 }
 
 sub pmc_preamble_at_end {
@@ -526,10 +532,18 @@ sub pmc_preamble_generated_code_body {
 
     return join("\n",
         "package $class;",
+        $self->pmc_preamble_class_def_for_end(%args),
+        qq{warn "bootstrap of class '$class' finished in " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::DEBUG();},
+    );
+}
+
+sub pmc_preamble_class_def_for_end {
+    my ( $self, %args ) = @_;
+
+    return (
         $self->pmc_preamble_define_isa(%args),
         $self->pmc_preamble_define_code_symbols(%args),
         $self->pmc_preamble_call_post_hook(%args),
-        qq{warn "bootstrap of class '$class' finished in " . (times - \$__mx_compile_t) . "s\n" if MooseX::Compile::DEBUG();},
     );
 }
 

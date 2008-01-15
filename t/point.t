@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Test::More 'no_plan';
+use Test::More tests => 61;
 use Test::Exception;
 
 use lib "t/lib";
