@@ -9,8 +9,10 @@ use warnings;
 use constant DEBUG => MooseX::Compile::Base::DEBUG();
 use constant default_compiler_class => "MooseX::Compile::Compiler";
 
+use Devel::INC::Sorted qw(inc_add_floating);
+
 BEGIN {
-    unshift @INC, sub {
+    inc_add_floating(sub {
         my ( $self, $file ) = @_;
 
         if ( DEBUG ) {
@@ -48,7 +50,7 @@ BEGIN {
         }
 
         return;
-    }
+    });
 }
 
 sub import {

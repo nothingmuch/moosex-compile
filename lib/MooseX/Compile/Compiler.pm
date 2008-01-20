@@ -27,9 +27,15 @@ sub compile_class {
     my ( $self, %args ) = @_;
     my $class = $args{class};
 
+    ( my $short_name = "$class.pm" ) =~ s{::}{/}g;
+    $args{short_name} = $short_name;
+
     unless ( defined $args{file} ) {
-        ( my $class_file = "$class.pm" ) =~ s{::}{/}g;
-        $args{file} = $INC{$class_file};
+        $args{file} = $INC{$short_name};
+    }
+
+    unless ( defined $args{pmc_file} ) {
+        $args{pmc_file} = "$args{file}c";
     }
 
     if ( $compiled_classes{$class}++ ) {
@@ -51,11 +57,18 @@ sub sym ($$;@) {
     bless { @args, name => $sym }, "MooseX::Compile::mangled::$type";
 }
 
+sub package_name ($;$) {
+    my ( $code, $cv ) = @_;
+    $cv ||= B::svref_2object($code);
+    local $@;
+    return eval { $cv->GV->STASH->NAME };
+}
+
 sub code_name ($;$) {
     my ( $code, $cv ) = @_;
     $cv ||= B::svref_2object($code);
     local $@;
-    return eval { join("::", $cv->STASH->NAME, $cv->GV->NAME) };
+    return eval { join("::", package_name($code, $cv), $cv->GV->NAME) };
 }
 
 sub verified_code_name ($;$) {
@@ -174,7 +187,9 @@ sub create_visitor {
                 } elsif ( $subname !~ /__ANON__$/ ) {
                     return subref $code, $subname;
                 } else {
-                    warn "Unable to locate symbol for $code";
+                    warn "Unable to locate symbol for $code ($subname) found in $class";
+                    use B::Deparse;
+                    warn B::Deparse->new->coderef2text($code);
                     return $code;
                 }
             }
@@ -185,7 +200,8 @@ sub create_visitor {
 }
 
 sub deflate_meta {
-    my ( $self, $meta, %args ) = @_;
+    my ( $self, %args ) = @_;
+    my $meta = $args{meta};
     
     my $visitor = $self->create_visitor(%args);
     
@@ -196,15 +212,19 @@ sub cache_meta {
     my ( $self, %args ) = @_;
     my $class = $args{class};
 
-    my $meta = $self->deflate_meta( $class->meta, %args );
-    $self->store_meta( $meta, %args );
+    my $meta = $self->deflate_meta( %args, meta => $class->meta  );
+    $self->store_meta( %args, meta => $meta );
 }
 
 sub store_meta {
-    my ( $self, $meta, %args ) = @_;
+    my ( $self, %args ) = @_;
+    my $meta = $args{meta};
+
+    my $mopc_file = $self->cached_meta_file(%args);
+    $mopc_file->dir->mkpath;
 
     local $@;
-    eval { Storable::nstore( $meta, $self->cached_meta_file_for_class(%args) ) };
+    eval { Storable::nstore( $meta, $mopc_file ) };
 
     if ( $@ ) {
         require YAML;
@@ -214,9 +234,7 @@ sub store_meta {
     }
     
     if ( DEBUG ) {
-        my $class = $args{class};
-        ( my $short_name = "${class}.mopc" ) =~ s{::}{/}g;
-        warn "stored $meta for $short_name\n";
+        warn "stored $meta in '$mopc_file'\n";
     }
 
     return 1;
@@ -229,9 +247,8 @@ sub method_category_filters {
         # FIXME recognize aliased methods
         sub {
             my ( $self, $entry ) = @_;
-            local $@;
             no warnings 'uninitialized';
-            return "meta" if $entry->{name} eq 'meta' and eval { B::svref_2object($entry->{body})->STASH->NAME } =~ /^(?: Moose | metaclass )/x,
+            return "meta" if $entry->{name} eq 'meta' and package_name($entry->{body}) =~ /^(?: Moose | metaclass )/x,
         },
         sub {
             my ( $self, $entry ) = @_;
@@ -241,6 +258,7 @@ sub method_category_filters {
             my ( $self, $entry ) = @_;
             return "file" if B::svref_2object($entry->{body})->FILE eq $args{file};
         },
+        sub { "unknown_methods" },
     );
 }
 
@@ -251,10 +269,10 @@ sub function_category_filters {
         # FIXME check for Moose exports, too (Scalar::Util stuff, etc)
         sub {
             my ( $self, $entry ) = @_;
-            local $@;
             no warnings 'uninitialized';
-            return "moose_sugar" if eval { $b->STASH->NAME } eq 'Moose';
+            return "moose_sugar" if package_name($entry->{body}) eq 'Moose';
         },
+        sub { "unknown_functions" },
     );
 }
 
@@ -279,8 +297,10 @@ sub extract_code_symbols {
             my $entry = { name => $name, meta => $method, body => $body };
 
             foreach my $filter ( @method_filters ) {
-                my $category = $self->$filter($entry) || "unknown_methods";
-                push @{ $categorized_symbols{$category} ||= [] }, $entry;
+                if ( my $category = $self->$filter($entry) ) {
+                    push @{ $categorized_symbols{$category} ||= [] }, $entry;
+                    last;
+                }
             }
         }
     }
@@ -290,13 +310,15 @@ sub extract_code_symbols {
 
         my @function_filters = $self->function_category_filters(%args);
 
-        foreach my $name ( grep { not $seen{$_}++ } keys %symbols ) {
+        foreach my $name ( sort grep { not $seen{$_}++ } keys %symbols ) {
             my $body = $symbols{$name};
             my $entry = { name => $name, body => $body };
 
             foreach my $filter ( @function_filters ) {
-                my $category = $filter->( $entry, %args ) || "unknown_functions";
-                push @{ $categorized_symbols{$category} ||= [] }, $entry;
+                if ( my $category = $self->$filter($entry) ) {
+                    push @{ $categorized_symbols{$category} ||= [] }, $entry;
+                    last;
+                }
             }
         }
     }
@@ -316,7 +338,7 @@ sub compile_code_symbols {
         push @ret, $self->$method( %args, symbols => delete($symbols->{$category}) );
     }
 
-    join "\n\n", @ret;
+    @ret;
 }
 
 sub compile_file_code_symbols {
@@ -339,9 +361,9 @@ sub compile_moose_sugar_code_symbols {
     return map {
         my $name = $_->{name};
         my $proto = prototype($_->{body});
-        $proto = $proto ? "($proto)" : "";
-        "sub $name $proto { }";
-    } @{ $args{symbols} };
+        $proto = $proto ? " ($proto)" : "";
+        "*$name = Sub::Name::subname('Moose::$name', sub$proto { });";
+    } @{ $args{symbols} || [] };
 }
 
 
@@ -385,7 +407,7 @@ sub compile_method {
                 : "die 'missing constraint'"
         } @$constraints;
         
-        push @env, "require Moose::Util::TypeConstraints::OptimizedConstraints", join("\n    ", 'my @type_constraints = (', map { "$_," } @constraint_code ) . "\n)",
+        push @env, "CORE::require Moose::Util::TypeConstraints::OptimizedConstraints", join("\n    ", 'my @type_constraints = (', map { "$_," } @constraint_code ) . "\n)",
     }
     
     push @env, map {
@@ -398,12 +420,15 @@ sub compile_method {
             : "(" . join(", ", map { $self->_value_to_perl($_) } @$ref ) . ")" )
     } keys %$closure_vars;
 
+    my $name = code_name($body);
+    my $quoted_name = dump($name);
+
     if ( @env ) {
         my $env = join(";\n\n", @env);
         $env =~ s/^/    /gm;
-        return "do {\n$env;\n\nsub $body_str\n}";
+        return "Sub::Name::subname( $quoted_name, do {\n$env;\n\n\nsub $body_str\n})";
     } else {
-        return "sub $body_str";
+        return "Sub::Name::subname( $quoted_name, sub $body_str )";
     }
 }
 
@@ -432,12 +457,14 @@ sub _subref_to_perl {
 }
 
 sub write_pmc_file {
-    my ( $self, $class, $file, @args ) = @_;
+    my ( $self, %args ) = @_;
 
-    ( my $short_name = "$class.pm" ) =~ s{::}{/}g;
+    my ( $class, $short_name, $file, $pmc_file ) = @args{qw(class short_name file pmc_file)};
+
+    $pmc_file->dir->mkpath;
 
     open my $pm_fh, "<", $file or die "open($file): $!";
-    open my $pmc_fh, ">", "${file}c" or die "Can't write .pmc, open(${file}c): $!";
+    open my $pmc_fh, ">", "$pmc_file" or die "Can't write .pmc, open($pmc_file): $!";
 
     local $/;
 
@@ -447,15 +474,16 @@ sub write_pmc_file {
 
     print $pmc_fh "$1\n\n" if $pm =~ /^(\#\!.*)/; # copy shebang
 
-    print $pmc_fh $self->pmc_preamble( $class, $file, @args );
+    print $pmc_fh $self->pmc_preamble( %args ), "\n";
 
-    print $pmc_fh "\n# line 1\n";
+    print $pmc_fh "# verbatim copy of $file follows\n";
+    print $pmc_fh "# line 1\n";
 
     print $pmc_fh $pm;
 
-    close $pmc_fh or die "Can't write .pmc, close(${file}c): $!";
+    close $pmc_fh or die "Can't write .pmc, close($pmc_file): $!";
 
-    warn "wrote PMC file '${short_name}c'\n" if DEBUG;
+    warn "wrote PMC file '$pmc_file'\n" if DEBUG;
 }
 
 sub pmc_preamble_comment {
@@ -478,17 +506,87 @@ sub pmc_preamble_header {
 # used in debugging output if any
 my \$__mx_compile_t; BEGIN { \$__mx_compile_t = times }
 
+
+
+# without use Moose we need to enable these manually
+use strict;
+use warnings;
+
+
+
+# load a few modules we need
+use Sub::Name ();
+use Scalar::Util ();
+
+
+
 # Register this file as a PMC
-use MooseX::Compile::Bootstrap(
+use MooseX::Compile::Bootstrap (
     class   => $quoted_class,
     file    => __FILE__,
     version => $version,
 );
 
 
-# without use Moose we need to enable these manually
-use strict;
-use warnings;
+
+
+# disable requiring and importing of Moose from this compile class
+my ( \$__mx_compile_prev_require, \%__mx_compile_overridden_imports );
+
+BEGIN {
+    \$__mx_compile_prev_require = defined &CORE::GLOBAL::require ? \\&CORE::GLOBAL::require : undef;
+
+    no warnings 'redefine';
+
+    *CORE::GLOBAL::require = sub {
+        my ( \$faked_class ) = ( \$_[0] =~ m/^ ( Moose | metaclass ) \\.pm \$/x );
+
+        return 1 if caller() eq $quoted_class and \$faked_class;
+
+        my \$hook;
+
+        if ( \$faked_class and not \$INC{\$_[0]} ) {
+            # load Moose or metaclass in a clean env, and then wrap it's import()
+            no strict 'refs';
+
+            my \$import = "\${faked_class}::import";
+
+            my \$wrapper = \\\&\$import;
+
+            undef *\$import; # clean out the symbol so it doesn't warn about redefining
+
+            \$hook = bless [sub {
+                \$__mx_compile_overridden_imports{\$faked_class} = \\\&\$import; # stash the real import
+                *\$import = \$wrapper;
+            }], "MooseX::Compile::Scope::Guard";
+        }
+
+        if ( \$__mx_compile_prev_require ) {
+            &\$__mx_compile_prev_require;
+        } else {
+            require \$_[0];
+        }
+    };
+
+    foreach my \$class qw(Moose metaclass) {
+        no strict 'refs';
+
+        my \$import = "\${class}::import";
+
+        \$__mx_compile_overridden_imports{\$class} = defined &\$import && \\\&\$import;
+
+        *\$import = sub {
+            return if caller eq $quoted_class;
+
+            if ( my \$sub = \$__mx_compile_overridden_imports{\$class} ) {
+                goto \$sub;
+            }
+
+            return;
+        };
+    }
+}
+
 HEADER
 
 }
@@ -520,11 +618,12 @@ ENV
 sub pmc_preamble_class_def_for_begin {
     my ( $self, %args ) = @_;
 
-    $self->compile_code_symbols( %args, symbol_categories => [qw(moose_sugar moose_exports)] );
+    join("\n\n", $self->compile_code_symbols( %args, symbol_categories => [qw(moose_sugar moose_exports)] ) );
 }
 
 sub pmc_preamble_at_end {
-    my ( $self, $code, %args ) = @_;
+    my ( $self, %args ) = @_;
+    my ( $class, $code ) = @args{qw(class code)};
 
     return <<HOOK
 # try to approximate the time that Moose generated code enters the class
@@ -533,6 +632,25 @@ my \$__mx_compile_run_at_end = bless [ sub {
 
 $code
 
+    foreach my \$class ( keys \%__mx_compile_overridden_imports ) {
+        my \$import = "\${class}::import";
+        no strict 'refs';
+        no warnings 'redefine';
+        if ( my \$prev = delete \$__mx_compile_overridden_imports{\$class} ) {
+            *\$import = \$prev;
+        } else {
+            delete \${ "\${class}::" }{import};
+        }
+    }
+
+    if ( \$__mx_compile_prev_require ) {
+        no warnings 'redefine';
+        *CORE::GLOBAL::require = \$__mx_compile_prev_require;
+    } else {
+        delete \$CORE::GLOBAL::{require};
+    }
+
+    warn "loading of class '$class' finished in " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::Base::DEBUG();
 } ], "MooseX::Compile::Scope::Guard";
 HOOK
 }
@@ -540,7 +658,10 @@ HOOK
 sub pmc_preamble_generated_code {
     my ( $self, %args ) = @_;
 
-    return $self->pmc_preamble_at_end($self->pmc_preamble_generated_code_body(%args), %args);
+    return $self->pmc_preamble_at_end(
+        %args,
+        code => join("\n\n", $self->pmc_preamble_generated_code_body(%args) ),
+    );
 }
 
 sub pmc_preamble_generated_code_body {
@@ -553,7 +674,7 @@ sub pmc_preamble_generated_code_body {
     return join("\n",
         "package $class;",
         $self->pmc_preamble_class_def_for_end(%args),
-        qq{warn "bootstrap of class '$class' finished in " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::DEBUG();},
+        qq{warn "bootstrap of class '$class' finished in " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::Base::DEBUG();},
     );
 }
 
@@ -593,7 +714,7 @@ sub pmc_preamble_faked_code_symbols {
     return <<METHODS
 {
     no warnings 'redefine';
-    *meta = sub { MooseX::Compile::Bootstrap->load_cached_meta( class => __PACKAGE__, file => __FILE__) };
+    *meta = Sub::Name::subname("Moose::meta", sub { MooseX::Compile::Bootstrap->load_cached_meta( class => __PACKAGE__, pmc_file => __FILE__ . 'c' ) });
 }
 METHODS
 }
@@ -628,7 +749,7 @@ sub pmc_preamble {
 
     delete @{ $args{all_symbols} }{qw(file meta unknown_methods unknown_functions)};
 
-    if ( keys %{ $args{all_symbols} } ) {
+    if ( DEBUG && keys %{ $args{all_symbols} } ) {
         use Data::Dumper;
         warn "leftover symbols: " . Dumper($args{all_symbols});
     }
@@ -639,7 +760,7 @@ sub pmc_preamble {
 sub pmc_preamble_footer {
     my ( $self, %args ) = @_;
     return <<FOOTER
-BEGIN { warn "giving control back to original '$args{short_name}', bootstrap preamble took " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::DEBUG() }
+BEGIN { warn "giving control back to original '$args{short_name}', bootstrap preamble took " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::Base::DEBUG() }
 FOOTER
 }
 

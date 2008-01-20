@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 
 package Point3D;
-use MooseX::Compile;
+use Moose;
 
 extends 'Point';
 

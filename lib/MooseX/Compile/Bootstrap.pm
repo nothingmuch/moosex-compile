@@ -45,8 +45,8 @@ sub load_cached_meta {
 sub inflate_cached_meta {
     my ( $self, $meta, %args ) = @_;
 
-    #$Class::Autouse::DEBUG = 1;
-    require Class::Autouse;
+    $Class::Autouse::DEBUG = 1;
+    #require Class::Autouse;
 
     foreach my $class qw(
         Moose::Meta::Class
@@ -56,7 +56,8 @@ sub inflate_cached_meta {
         Moose::Meta::Attribute
     ) {
         #warn "marking $class for autouse\n" if DEBUG;
-        Class::Autouse->autouse($class);
+        #Class::Autouse->autouse($class);
+        $self->load_classes($class);
     }
 
     $self->create_visitor(%args)->visit($meta);
@@ -70,23 +71,24 @@ sub create_visitor {
     Data::Visitor::Callback->new(
         object_no_class => "visit_ref",
         object_final => sub {
-            my ( $self, $obj ) = @_;
+            my ( $v, $obj ) = @_;
 
             die "Invalid object loaded from cached meta: $obj"
                 if ref($obj) =~ /^MooseX::Compile::/;
 
             unless ( ref($obj) =~ /^Class::MOP::Class::__ANON__::/x ) {
                 #warn "marking " . ref($obj) . " for autouse\n" if DEBUG;
-                Class::Autouse->autouse(ref($obj));
+                #Class::Autouse->autouse(ref($obj));
+                $self->load_classes(ref($obj));
             }
 
             return $obj;
         },
         "MooseX::Compile::mangled::immutable_metaclass" => sub {
-            my ( $self, $spec ) = @_;
+            my ( $v, $spec ) = @_;
             my ( $class, $options ) = @{ $spec }{qw(class options)};
 
-            $class = $self->visit_ref($class);
+            $class = $v->visit_ref($class);
 
             require Class::MOP::Immutable;
             my $t = Class::MOP::Immutable->new( $class, $options );
@@ -98,13 +100,13 @@ sub create_visitor {
             return $class;
         },
         "MooseX::Compile::mangled::constraint" => sub {
-            my ( $self, $sym ) = @_;
+            my ( $v, $sym ) = @_;
             warn "loading type constraint named '$sym->{name}' in cached metaclass\n" if DEBUG;
             require Moose::Util::TypeConstraints;
             Moose::Util::TypeConstraints::find_type_constraint($sym->{name});
         },
         "MooseX::Compile::mangled::subref" => sub {
-            my ( $self, $sym ) = @_;
+            my ( $v, $sym ) = @_;
             no strict 'refs';
             if ( my $file = $sym->{file} ) {
                 warn "loading file $sym->{file} for the definition of \&$sym->{name}\n" if DEBUG && !exists($INC{$sym->{file}});
@@ -118,7 +120,7 @@ sub create_visitor {
 sub load_raw_cached_meta {
     my ( $self, %args ) = @_;
     
-    my $meta_file = $self->cached_meta_file_for_class(%args);
+    my $meta_file = $self->cached_meta_file(%args);
 
     require Storable;
     Storable::retrieve($meta_file);

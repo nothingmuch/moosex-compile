@@ -5,6 +5,8 @@ package MooseX::Compile::Base;
 use strict;
 use warnings;
 
+use Path::Class;
+
 our $VERSION = "0.01";
 
 use constant DEBUG => our $DEBUG || $ENV{MX_COMPILE_DEBUG};
@@ -40,24 +42,14 @@ sub load_classes {
     }
 }
 
-sub cached_meta_file_for_class {
+sub cached_meta_file {
     my ( $self, %args ) = @_;
-    my ( $target, $file ) = @args{qw(class file)};
 
-    ( my $class_file = "$target.pm" ) =~ s{::}{/}g;
+    my $meta_file = $args{pmc_file} || die "PMC file path must be specified";
 
-    if ( $file eq ($INC{$class_file} || '') ) {
-        ( my $meta_file = $file ) =~ s/\.pm$/.mopc/;
-        #return file($meta_file);
-        return $meta_file;
-    } else { # try to support multiple classes per file
-        die "filename != class name ($file, $target, $INC{$class_file})";
-        ( my $meta_dir = $file ) =~ s/\.pm$//;
-        ( my $mangled_class = $target ) =~ s{::}{_}g;
-        # mkpath
-        require Path::Class;
-        return Path::Class::dir($meta_dir)->file( "$mangled_class.mopc" );
-    }
+    $meta_file =~ s/\.pmc$/.mopc/;
+
+    return file($meta_file);
 }
 
 {
@@ -76,6 +68,12 @@ sub cached_meta_file_for_class {
 
     package MooseX::Compile::MetaBlackHole;
     # FIXME use Class::MOP::Immutable's opts?
+
+    sub isa {
+        my ( $self, $class ) = @_;
+        return 1 if $class eq 'Moose::Meta::Class' or $class eq 'Class::MOP::Class';
+        return $self->SUPER::isa($class);
+    }
 
     sub DESTROY {}
 
