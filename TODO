@@ -29,3 +29,7 @@
               env?
             - look into DDS's mangling
         - extensible custom deparsing for closed values too
+
+- add a no meta compilation option, for non introspectable classes which are
+  completely Moose free
+
