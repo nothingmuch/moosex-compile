@@ -97,9 +97,12 @@ sub subref ($;$) {
         my $cv = B::svref_2object($code);
         $name ||= code_name($code, $cv);
         if ( $name && verify_code_name($code,$name) ) {
-            my $file = $cv->FILE;
-            my %rev_inc = reverse %INC;
-            return sym( $name, "subref", ( -f $file ? ( file => $rev_inc{$file} ) : () ) );
+            my @args;
+            if ( -f ( my $file = $cv->FILE ) ) {
+                my %rev_inc = reverse %INC;
+                push @args, file => $rev_inc{$file} if $rev_inc{$file} !~ /^(?:Moose|metaclass)\.pm$/;
+            }
+            return sym( $name, "subref", @args );
         } else {
             warn "$code has name '$name', but it doesn't point back to the cv" if $name;
             require Data::Dumper;
@@ -287,7 +290,7 @@ sub extract_code_symbols {
         my @method_filters = $self->method_category_filters(%args);
         my $method_map = $class->meta->get_method_map;
 
-        foreach my $name ( keys %$method_map ) {
+        foreach my $name ( sort keys %$method_map ) {
             $seen{$name}++;
 
             my $method = $method_map->{$name};
