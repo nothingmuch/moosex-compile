@@ -18,6 +18,7 @@ our %compiled_classes;
 
 use constant DEBUG => MooseX::Compile::Base::DEBUG();
 
+# FIXME make this Moose based eventually
 sub new {
     my ( $class, %args ) = @_;
     bless \%args, $class;
@@ -51,6 +52,7 @@ sub compile_class {
     warn "compilation of .pmc and .mopc for class '$class' took " . ( times - $t ) . "s\n" if DEBUG;
 }
 
+# FIXME these should really be methods, I suppose
 
 sub sym ($$;@) {
     my ( $sym, $type, @args ) = @_;
@@ -295,7 +297,6 @@ sub extract_code_symbols {
 
             my $method = $method_map->{$name};
             my $body = $method->body;
-            my $b = B::svref_2object($body);
 
             my $entry = { name => $name, meta => $method, body => $body };
 
