@@ -33,3 +33,15 @@
 - add a no meta compilation option, for non introspectable classes which are
   completely Moose free
 
+- unit tests
+    - extract_code_symbols
+    - serialization
+        - metaclass visitors
+    - compile_symbols
+        - for each symbol category
+            - decompile a specific method, reparse it, and make sure it's the same
+    - preabmle and boostrapper
+        - output individual chunks, and make sure they have the desired behavior
+        
+    
+
