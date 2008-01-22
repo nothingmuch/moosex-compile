@@ -251,7 +251,8 @@ write conditional code, like:
 =item C<__mx_compile_post_hook>
 
 If you add a subroutine named C<__mx_compile_post_hook> to your class it will
-be called at the end of compilation, allowing you to 
+be called at the end of compilation, allowing you to to diddle the class after
+loading.
 
 =head1 LIMITATIONS
 
