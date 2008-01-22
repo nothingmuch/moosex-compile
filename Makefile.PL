@@ -18,6 +18,7 @@ WriteMakefile(
         'Class::Inspector' => 0,
         'Data::Dump' => 0,
         'Devel::INC::Sorted' => 0,
+        'Path::Class' => 0,
 	},
 );
 
