@@ -503,96 +503,117 @@ sub pmc_preamble_header {
     my( $self, %args ) = @_;
     my $class = $args{class};
 
-    my $quoted_class = dump($class);
-    my $version = dump($MooseX::Compile::Base::VERSION);
+    return join("\n\n\n", map { my $method = "pmc_preamble_header_$_"; $self->$method(%args) } $self->pmc_premable_header_pieces(%args) );
+}
 
-    return <<HEADER;
+sub pmc_premable_header_pieces {
+    return qw(timing strict modules register_pmc hide_moose);
+}
+
+sub pmc_premable_header_timing {
+    return <<'TIMING';
 # used in debugging output if any
-my \$__mx_compile_t; BEGIN { \$__mx_compile_t = times }
+my $__mx_compile_t; BEGIN { $__mx_compile_t = times }
+TIMING
+}
 
-
-
+sub pmc_premable_header_strict {
+    return <<'STRICT';
 # without use Moose we need to enable these manually
 use strict;
 use warnings;
+STRICT
+}
 
-
-
+sub pmc_premable_header_modules {
+    return <<'MODULES'
 # load a few modules we need
 use Sub::Name ();
 use Scalar::Util ();
+MODULES
+}
 
+sub pmc_premable_header_register_pmc {
+    my ( $self, %args ) = @_;
+    my ( $quoted_class, $version ) = @args{qw(quoted_class quoted_compiler_version)};
 
-
+    return <<REGISTER;
 # Register this file as a PMC
 use MooseX::Compile::Bootstrap (
     class   => $quoted_class,
     file    => __FILE__,
     version => $version,
 );
+REGISTER
+}
 
+sub pmc_preamble_header_hide_moose {
+    my ( $self, %args ) = @_;
 
-
-
+    my $hide = <<'#\'HIDE_MOOSE';
+#\
 # disable requiring and importing of Moose from this compile class
-my ( \$__mx_compile_prev_require, \%__mx_compile_overridden_imports );
+my ( $__mx_compile_prev_require, %__mx_compile_overridden_imports );
 
 BEGIN {
-    \$__mx_compile_prev_require = defined &CORE::GLOBAL::require ? \\&CORE::GLOBAL::require : undef;
+    $__mx_compile_prev_require = defined &CORE::GLOBAL::require ? \&CORE::GLOBAL::require : undef;
 
     no warnings 'redefine';
 
+    # FIXME move this to Bootstrap? Bootstrap->override_global_require( class => $$quoted_class$$ )?
     *CORE::GLOBAL::require = sub {
-        my ( \$faked_class ) = ( \$_[0] =~ m/^ ( Moose | metaclass ) \\.pm \$/x );
+        my ( $faked_class ) = ( $_[0] =~ m/^ ( Moose | metaclass ) \.pm $/x );
 
-        return 1 if caller() eq $quoted_class and \$faked_class;
+        return 1 if caller() eq $$quoted_class$$ and $faked_class;
 
-        my \$hook;
+        my $hook;
 
-        if ( \$faked_class and not \$INC{\$_[0]} ) {
+        if ( $faked_class and not $INC{$_[0]} ) {
             # load Moose or metaclass in a clean env, and then wrap it's import()
             no strict 'refs';
 
-            my \$import = "\${faked_class}::import";
+            my $import = "${faked_class}::import";
 
-            my \$wrapper = \\\&\$import;
+            my $wrapper = \&$import;
 
-            undef *\$import; # clean out the symbol so it doesn't warn about redefining
+            undef *$import; # clean out the symbol so it doesn't warn about redefining
 
-            \$hook = bless [sub {
-                \$__mx_compile_overridden_imports{\$faked_class} = \\\&\$import; # stash the real import
-                *\$import = \$wrapper;
+            $hook = bless [sub {
+                $__mx_compile_overridden_imports{$faked_class} = \&$import; # stash the real import
+                *$import = $wrapper;
             }], "MooseX::Compile::Scope::Guard";
         }
 
-        if ( \$__mx_compile_prev_require ) {
-            &\$__mx_compile_prev_require;
+        if ( $__mx_compile_prev_require ) {
+            &$__mx_compile_prev_require;
         } else {
-            require \$_[0];
+            require $_[0];
         }
     };
 
-    foreach my \$class qw(Moose metaclass) {
+    foreach my $class qw(Moose metaclass) {
         no strict 'refs';
 
-        my \$import = "\${class}::import";
+        my $import = "${class}::import";
 
-        \$__mx_compile_overridden_imports{\$class} = defined &\$import && \\\&\$import;
+        $__mx_compile_overridden_imports{$class} = defined &$import && \&$import;
 
-        *\$import = sub {
-            return if caller eq $quoted_class;
+        *$import = sub {
+            return if caller eq $$quoted_class$$;
 
-            if ( my \$sub = \$__mx_compile_overridden_imports{\$class} ) {
-                goto \$sub;
+            if ( my $sub = $__mx_compile_overridden_imports{\$class} ) {
+                goto $sub;
             }
 
             return;
         };
     }
 }
+#'HIDE_MOOSE
 
-HEADER
+    $hide =~ s/\$\$(\w+)\$\$/$args{$1}/ge;
 
+    return $hide;
 }
 
 sub pmc_preamble_setup_env {
@@ -636,35 +657,50 @@ my \$__mx_compile_run_at_end = bless [ sub {
 
 $code
 
-    foreach my \$class ( keys \%__mx_compile_overridden_imports ) {
-        my \$import = "\${class}::import";
+   } ], "MooseX::Compile::Scope::Guard";
+HOOK
+}
+
+sub pmc_preamble_unhide_moose {
+    my ( $self, %args ) = @_;
+
+    return <<'#\'UNHIDE_MOOSE';
+#\
+    # un-hijack CORE::GLOBAL::require so that it no longer hides Moose from this class
+    # and undo the import wrappers that likewise prevent importing if it's already loaded
+
+    foreach my $class ( keys %__mx_compile_overridden_imports ) {
+        my $import = "${class}::import";
         no strict 'refs';
-        no warnings 'redefine';
-        if ( my \$prev = delete \$__mx_compile_overridden_imports{\$class} ) {
-            *\$import = \$prev;
+        if ( my $prev = delete $__mx_compile_overridden_imports{$class} ) {
+            no warnings 'redefine';
+            *$import = $prev;
         } else {
-            delete \${ "\${class}::" }{import};
+            delete ${ "${class}::" }{import};
         }
     }
 
-    if ( \$__mx_compile_prev_require ) {
+    if ( $__mx_compile_prev_require ) {
         no warnings 'redefine';
-        *CORE::GLOBAL::require = \$__mx_compile_prev_require;
+        *CORE::GLOBAL::require = $__mx_compile_prev_require;
     } else {
-        delete \$CORE::GLOBAL::{require};
+        delete $CORE::GLOBAL::{require};
     }
-
-    warn "loading of class '$class' finished in " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::Base::DEBUG();
-} ], "MooseX::Compile::Scope::Guard";
-HOOK
+#'UNHIDE_MOOSE
 }
 
 sub pmc_preamble_generated_code {
     my ( $self, %args ) = @_;
 
+    my $class = $args{class};
+
     return $self->pmc_preamble_at_end(
         %args,
-        code => join("\n\n", $self->pmc_preamble_generated_code_body(%args) ),
+        code => join("\n\n",
+            $self->pmc_preamble_unhide_moose(%args),
+            $self->pmc_preamble_generated_code_body(%args),
+            qq{warn "loading of class '$class' finished in " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::Base::DEBUG();},
+        ),
     );
 }
 
@@ -740,6 +776,12 @@ sub pmc_preamble {
     ( my $short_name = "$class.pm" ) =~ s{::}{/}g;
 
     $args{short_name} = $short_name;
+
+    $args{quoted_class} = dump($class);
+
+    $args{compiler_version} = $MooseX::Compile::Base::VERSION;
+
+    $args{quoted_compiler_version} = dump($MooseX::Compile::Base::VERSION);
 
     $args{all_symbols} = { $self->extract_code_symbols(%args) };
 
