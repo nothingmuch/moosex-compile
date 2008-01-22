@@ -11,8 +11,6 @@ use FindBin;
 print <<'BLURB';
 The following tests will run:
 
-    just_fork:               Just a fork & waitpid to compare with the overhead of starting a new environment
-
     plain_moose:             Mint moose based Point.pm & Point3D.pm
 
     class_accessor:          Class::Accessor based Point & Point3D
@@ -25,6 +23,22 @@ The following tests will run:
                              for Point, Point3D and Moose::Object
 
     moose_pmc_and_one_meta:  Loads the .pmc files and only Point's .mopc
+
+    just_fork:               Just a fork & waitpid to compare with the overhead of starting a new environment
+
+    moose_metaclasses_only:  Loads Moose but not Point etc.
+
+    moose_minimal_meta:      Loads the minimal Moose::Meta::* stuff the .mopc's
+                             will need. Attempts to measure the static overhead
+                             of .mopc files.
+
+
+
+Note that these results are a bit skewed due to the low class count (just Point
+and Point3D and their direct dependencies depending on the variant). I expect
+class_accessor to fair much better for a high class count, and the
+moose_pmc_and_.*_meta tests to also significantly improve in speed.  The
+benchmark will be corrected accordingly upon reception of round tuits ;-)
 
 
 Benchmarking...
@@ -123,6 +137,29 @@ cmpthese({
             require Point3D;
 
             MooseX::Compile::Bootstrap->load_cached_meta( class => "Point", pmc_file => $INC{'Point.pm'} . 'c' );
+
+            exit;
+        }
+    }),
+    moose_metaclasses_only => timeit(5 * $it, q{
+        if ( my $pid = fork ) {
+            waitpid $pid, 0;
+        } else {
+            require Moose;
+
+            exit;
+        }
+    }),
+    moose_minimal_meta => timeit(5 * $it, q{
+        if ( my $pid = fork ) {
+            waitpid $pid, 0;
+        } else {
+            require Moose::Meta::Class;
+            require Moose::Meta::TypeConstraint;
+            require Moose::Meta::TypeConstraint::Class;
+            require Moose::Meta::TypeCoercion;
+            require Moose::Meta::Attribute;
+            require Moose::Meta::Instance;
 
             exit;
         }
