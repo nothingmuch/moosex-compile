@@ -503,29 +503,21 @@ sub pmc_preamble_header {
     my( $self, %args ) = @_;
     my $class = $args{class};
 
-    return join("\n\n\n", map { my $method = "pmc_preamble_header_$_"; $self->$method(%args) } $self->pmc_premable_header_pieces(%args) );
+    return join("\n\n\n", map { my $method = "pmc_preamble_header_$_"; $self->$method(%args) } $self->pmc_preamble_header_pieces(%args) );
 }
 
-sub pmc_premable_header_pieces {
-    return qw(timing strict modules register_pmc hide_moose);
+sub pmc_preamble_header_pieces {
+    return qw(timing modules register_pmc hide_moose);
 }
 
-sub pmc_premable_header_timing {
+sub pmc_preamble_header_timing {
     return <<'TIMING';
 # used in debugging output if any
 my $__mx_compile_t; BEGIN { $__mx_compile_t = times }
 TIMING
 }
 
-sub pmc_premable_header_strict {
-    return <<'STRICT';
-# without use Moose we need to enable these manually
-use strict;
-use warnings;
-STRICT
-}
-
-sub pmc_premable_header_modules {
+sub pmc_preamble_header_modules {
     return <<'MODULES'
 # load a few modules we need
 use Sub::Name ();
@@ -533,7 +525,7 @@ use Scalar::Util ();
 MODULES
 }
 
-sub pmc_premable_header_register_pmc {
+sub pmc_preamble_header_register_pmc {
     my ( $self, %args ) = @_;
     my ( $quoted_class, $version ) = @args{qw(quoted_class quoted_compiler_version)};
 
@@ -599,7 +591,14 @@ BEGIN {
         $__mx_compile_overridden_imports{$class} = defined &$import && \&$import;
 
         *$import = sub {
-            return if caller eq $$quoted_class$$;
+            if ( caller eq $$quoted_class$$ ) {
+                if ( $class eq 'Moose' ) {
+                    strict->import;
+                    warnings->import;
+                }
+
+                return;
+            }
 
             if ( my $sub = $__mx_compile_overridden_imports{\$class} ) {
                 goto $sub;
