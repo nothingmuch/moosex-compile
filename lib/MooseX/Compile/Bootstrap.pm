@@ -130,3 +130,28 @@ sub load_raw_cached_meta {
 __PACKAGE__
 
 __END__
+
+=pod
+
+=head1 NAME
+
+MooseX::Compile::Bootstrap - Helps L<Moose> C<.pmc> files load.
+
+=head1 SYNOPSIS
+
+    # no user servicable parts inside
+
+=head1 HERE BE DRAGONS
+
+This is alpha code. You can tinker, subclass etc but beware that things
+definitely will change in the near future.
+
+When a final version comes out there will be a documented process for how to
+extend the bootstrapper to handle your classes, whether by subclassing or using
+various hooks.
+
+In the future this file will also live in its own distribution so that you can
+deploy compiled C<.pmc> files without ever needing to install L<Moose> on your
+target machine.
+
+=cut

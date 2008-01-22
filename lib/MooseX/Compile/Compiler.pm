@@ -771,3 +771,35 @@ FOOTER
 __PACKAGE__
 
 __END__
+
+=pod
+
+=head1 NAME
+
+MooseX::Compile::Compiler - The Moose metaclass C<.pmc> compiler
+
+=head1 SYNOPSIS
+
+    my $compiler = MooseX::Compile::Compiler->new();
+
+    $compiler->compile_class(
+        class => "Foo::Bar",
+        file  => $INC{"Foo/Bar.pm"},
+        pmc_file => "my/pmc/lib/Foo/Bar.pmc",
+    );
+
+=head1 DESCRIPTION
+
+This class does the heavy lifting of emitting a C<.pmc> and a C<.mopc> for a
+given class.
+
+=head1 HERE BE DRAGONS
+
+This is alpha code. You can tinker, subclass etc but beware that things
+definitely will change in the near future.
+
+When a final version comes out there will be a documented process for how to
+extend the compiler to handle your classes, whether by subclassing or using
+various hooks.
+
+=cut
