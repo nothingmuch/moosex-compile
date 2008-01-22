@@ -2,6 +2,10 @@
 
 - The compiler methods need better names. Most of them really really suck.
 
+- Add the ability to strip a class of it's C<meta> for moose free deployment.
+  The compiler must be able to prepare a different bootstrapped version without
+  the loading code in place.
+
 - Audit the code for extensibility
     - How easy is it to alter the structure of the PMC?
     - How easy is it to override minor details?
