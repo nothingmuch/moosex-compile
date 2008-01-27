@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 
-package Point;	
+package # hide from pause
+Point;
 use Moose;
 
 use base qw(Class::Accessor);

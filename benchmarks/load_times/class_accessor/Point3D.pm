@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 
-package Point3D;
+package # hide from pause
+Point3D;
 use Moose;
 
 use base qw(Point);

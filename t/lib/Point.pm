@@ -1,6 +1,8 @@
 #!/usr/bin/perl
 
-package Point;	
+package # hide from pause
+Point;
+
 use Moose;
 
 has 'x' => (isa => 'Int', is => 'ro');
