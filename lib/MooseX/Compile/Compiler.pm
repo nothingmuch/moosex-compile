@@ -28,6 +28,12 @@ sub compile_class {
     my ( $self, %args ) = @_;
     my $class = $args{class};
 
+    if ( $compiled_classes{$class}++ ) {
+        warn "already compiled class '$class'\n" if DEBUG;
+        return;
+    }
+
+
     ( my $short_name = "$class.pm" ) =~ s{::}{/}g;
     $args{short_name} = $short_name;
 
@@ -39,14 +45,12 @@ sub compile_class {
         $args{pmc_file} = "$args{file}c";
     }
 
-    if ( $compiled_classes{$class}++ ) {
-        warn "already compiled class '$class'\n" if DEBUG;
-        return;
-    }
-
     my $t = times;
 
-    $self->cache_meta(%args);
+    unless ( $args{no_meta} ) {
+        $self->cache_meta(%args);
+    }
+
     $self->write_pmc_file(%args);
 
     warn "compilation of .pmc and .mopc for class '$class' took " . ( times - $t ) . "s\n" if DEBUG;
@@ -214,11 +218,30 @@ sub deflate_meta {
 }
 
 sub cache_meta {
+    my ( $self, @args ) = @_;
+
+    my $meta = $self->get_meta(@args);
+
+    my $deflated_meta = $self->deflate_meta( @args, meta => $meta );
+
+    $self->store_meta( @args, meta => $deflated_meta );
+}
+
+sub get_meta {
     my ( $self, %args ) = @_;
     my $class = $args{class};
 
-    my $meta = $self->deflate_meta( %args, meta => $class->meta  );
-    $self->store_meta( %args, meta => $meta );
+    my $meta = $class->meta;
+
+    if ( $args{make_immutable} and not($class->is_immutable) ) {
+        # unfortunately this must be done in place due to make_immutable's limitations
+        # however, this doesn't matter much, since the .pmc and the .pm should
+        # in theory behave the same
+        $meta->make_immutable;
+        return $class->meta;
+    } else {
+        return $meta;
+    }
 }
 
 sub store_meta {
@@ -279,6 +302,17 @@ sub function_category_filters {
         },
         sub { "unknown_functions" },
     );
+}
+
+sub string_subname {
+    my ( $self, $name, $body, %args ) = @_;
+
+    if ( $args{no_subname} ) {
+        return $body;
+    } else {
+        my $quoted_name = dump($name);
+        return "Sub::Name::subname($quoted_name, $body)";
+    }
 }
 
 sub extract_code_symbols {
@@ -362,14 +396,16 @@ sub compile_moose_exports_code_symbols {
 
 sub compile_moose_sugar_code_symbols {
     my ( $self, %args ) = @_;
+
+    return if $args{no_sugar};
+
     return map {
         my $name = $_->{name};
         my $proto = prototype($_->{body});
         $proto = $proto ? " ($proto)" : "";
-        "*$name = Sub::Name::subname('Moose::$name', sub$proto { });";
+        "*$name = " . $self->string_subname( "Moose::$name", "sub$proto { }", %args ) . ";";
     } @{ $args{symbols} || [] };
 }
-
 
 sub compile_generated_code_symbols {
     my ( $self, %args ) = @_;
@@ -425,14 +461,13 @@ sub compile_method {
     } keys %$closure_vars;
 
     my $name = code_name($body);
-    my $quoted_name = dump($name);
 
     if ( @env ) {
         my $env = join(";\n\n", @env);
         $env =~ s/^/    /gm;
-        return "Sub::Name::subname( $quoted_name, do {\n$env;\n\n\nsub $body_str\n})";
+        return $self->string_subname( $name, "do {\n$env;\n\n\nsub $body_str\n})", %args );
     } else {
-        return "Sub::Name::subname( $quoted_name, sub $body_str )";
+        return $self->string_subname( $name, "sub $body_str", %args );
     }
 }
 
@@ -511,6 +546,10 @@ sub pmc_preamble_header_pieces {
 }
 
 sub pmc_preamble_header_timing {
+    my ( $self, %args ) = @_;
+
+    return if $args{no_debug};
+
     return <<'TIMING';
 # used in debugging output if any
 my $__mx_compile_t; BEGIN { $__mx_compile_t = times }
@@ -518,16 +557,30 @@ TIMING
 }
 
 sub pmc_preamble_header_modules {
-    return <<'MODULES'
-# load a few modules we need
-use Sub::Name ();
-use Scalar::Util ();
-MODULES
+    my ( $self, %args ) = @_;
+
+    my @modules;
+    
+    push @modules, "Sub::Name"    unless $args{no_subname};
+    push @modules, "Scalar::Util" unless $args{no_scalar_util};
+
+    return join("\n", map { "use $_ ();" } @modules);
 }
 
 sub pmc_preamble_header_register_pmc {
     my ( $self, %args ) = @_;
     my ( $quoted_class, $version ) = @args{qw(quoted_class quoted_compiler_version)};
+
+    return '{ no warnings "redefine"; sub MooseX::Compile::Scope::Guard::DESTROY { $_[0][0]->() } }'
+        if $args{no_meta} and $args{no_debug};
+
+    return <<'FOO' if $args{no_meta};
+{
+    no warnings "redefine";
+    sub MooseX::Compile::Scope::Guard::DESTROY { $_[0][0]->() }
+    sub MooseX::Compile::Base::DEBUG () { 0 }
+}
+FOO
 
     return <<REGISTER;
 # Register this file as a PMC
@@ -541,6 +594,8 @@ REGISTER
 
 sub pmc_preamble_header_hide_moose {
     my ( $self, %args ) = @_;
+
+    return if $args{no_hide};
 
     my $hide = <<'#\'HIDE_MOOSE';
 #\
@@ -620,17 +675,12 @@ sub pmc_preamble_setup_env {
 
     my $class = $args{class};
 
-    my $quoted_class = dump($class);
-
     my $decl = $self->pmc_preamble_class_def_for_begin(%args);
 
     return <<ENV;
 # stub the sugar
 BEGIN {
     package $class;
-
-    my \$fake_meta = bless { name => $quoted_class }, "MooseX::Compile::MetaBlackHole";
-    sub meta { \$fake_meta }
 
 $decl
 
@@ -640,9 +690,23 @@ ENV
 }
 
 sub pmc_preamble_class_def_for_begin {
+    my ( $self, @args ) = @_;
+
+    join("\n\n",
+        $self->pmc_preamble_fake_meta( @args ),
+        $self->compile_code_symbols( @args, symbol_categories => [qw(moose_sugar moose_exports)] ),
+    );
+}
+
+sub pmc_preamble_fake_meta {
     my ( $self, %args ) = @_;
 
-    join("\n\n", $self->compile_code_symbols( %args, symbol_categories => [qw(moose_sugar moose_exports)] ) );
+    return if $args{no_meta};
+
+    return <<FAKE_META;
+    my \$fake_meta = bless { name => $args{quoted_class} }, "MooseX::Compile::MetaBlackHole";
+    sub meta { \$fake_meta }
+FAKE_META
 }
 
 sub pmc_preamble_at_end {
@@ -662,6 +726,8 @@ HOOK
 
 sub pmc_preamble_unhide_moose {
     my ( $self, %args ) = @_;
+
+    return if $args{no_hide};
 
     return <<'#\'UNHIDE_MOOSE';
 #\
@@ -693,14 +759,20 @@ sub pmc_preamble_generated_code {
 
     my $class = $args{class};
 
-    return $self->pmc_preamble_at_end(
-        %args,
-        code => join("\n\n",
-            $self->pmc_preamble_unhide_moose(%args),
-            $self->pmc_preamble_generated_code_body(%args),
-            qq{warn "loading of class '$class' finished in " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::Base::DEBUG();},
-        ),
+    my $code = join("\n\n",
+        $self->pmc_preamble_unhide_moose(%args),
+        $self->pmc_preamble_generated_code_body(%args),
+        ( $args{no_debug} ? () : qq{warn "loading of class '$class' finished in " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::Base::DEBUG();} ),
     );
+
+    if ( $args{code_at_begin} ) {
+        return "BEGIN {\n\n$code\n\n}\n";
+    } else {
+        return $self->pmc_preamble_at_end(
+            %args,
+            code => $code,
+        );
+    }
 }
 
 sub pmc_preamble_generated_code_body {
@@ -713,7 +785,7 @@ sub pmc_preamble_generated_code_body {
     return join("\n",
         "package $class;",
         $self->pmc_preamble_class_def_for_end(%args),
-        qq{warn "bootstrap of class '$class' finished in " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::Base::DEBUG();},
+        ( $args{no_debug} ? () : qq{warn "bootstrap of class '$class' finished in " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::Base::DEBUG();} ),
     );
 }
 
@@ -730,12 +802,13 @@ sub pmc_preamble_class_def_for_end {
 sub pmc_preamble_define_isa {
     my ( $self, %args ) = @_;
 
-    my $ISA = dump($args{class}->meta->superclasses);
+    my @ISA = $args{class}->meta->superclasses;
+    my $ISA = dump(@ISA);
 
-    return <<ISA
-our \@ISA = $ISA;
-MooseX::Compile::Bootstrap->load_classes(\@ISA);
-ISA
+    return join("\n",
+        "our \@ISA = $ISA;",
+        ( @ISA ? 'foreach my $class (@ISA) { ( my $file = "$class.pm" ) =~ s{::}{/}g; require $file }' : () ),
+    );
 }
 
 sub pmc_preamble_define_code_symbols {
@@ -750,6 +823,8 @@ sub pmc_preamble_define_code_symbols {
 sub pmc_preamble_faked_code_symbols {
     my ( $self, %args ) = @_;
 
+    return if $args{no_meta};
+
     return <<METHODS
 {
     no warnings 'redefine';
@@ -760,6 +835,9 @@ METHODS
 
 sub pmc_preamble_call_post_hook {
     my ( $self, %args ) = @_;
+
+    return if $args{no_post_hook};
+
     my $class = $args{class};
 
     return <<HOOK
@@ -804,6 +882,9 @@ sub pmc_preamble {
 
 sub pmc_preamble_footer {
     my ( $self, %args ) = @_;
+
+    return if $args{no_debug};
+
     return <<FOOTER
 BEGIN { warn "giving control back to original '$args{short_name}', bootstrap preamble took " . (times - \$__mx_compile_t) . "s\\n" if MooseX::Compile::Base::DEBUG() }
 FOOTER

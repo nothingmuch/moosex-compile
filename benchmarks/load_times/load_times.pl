@@ -1,12 +1,11 @@
 #!/usr/bin/perl
 
-use Benchmark qw(cmpthese timeit);
+use Benchmark qw(cmpthese);
 
 use Path::Class;
 
-die ".pmc's missing from 'compiled_lib', please run compile.sh" unless -f dir( $FindBin::Bin )->subdir("compiled_lib")->file("Point.pmc");
-
 use FindBin;
+die ".pmc's missing from 'compiled_lib', please run compile.sh" unless -f dir( $FindBin::Bin )->subdir("compiled_lib")->file("Point.pmc");
 
 print <<'BLURB';
 The following tests will run:
